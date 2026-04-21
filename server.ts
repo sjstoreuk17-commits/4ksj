@@ -14,50 +14,23 @@ const __dirname = path.dirname(__filename);
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
-  // Fully open CORS to allow hosting basically anywhere (Hugging Face, custom domains, etc)
-  app.use(cors({
-    origin: '*',
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-    credentials: true
-  }));
-
-  // Middleware for JSON parsing
+  // Middleware
+  app.use(cors());
   app.use(express.json());
-
-  // Health check for remote monitoring
-  app.get('/api/health', (req, res) => {
-    res.json({ 
-      status: 'online', 
-      origin: req.headers.origin || 'unknown',
-      host: req.headers.host,
-      timestamp: new Date().toISOString() 
-    });
-  });
 
 // In-memory cache for Xtream data
 let xtreamCache: Record<string, any> = {};
 let lastFetch: number = 0;
 
 // API Proxy Route to bypass CORS and handle large payloads with caching
-app.all('/api/proxy', async (req, res) => {
-  const targetUrl = (req.query.url || req.body.url) as string;
-  const useCache = req.query.cache === 'true' || req.body.cache === true;
+app.get('/api/proxy', async (req, res) => {
+  const targetUrl = req.query.url as string;
+  const useCache = req.query.cache === 'true';
 
   if (!targetUrl) {
     return res.status(400).json({ error: 'Missing url parameter' });
-  }
-
-  // Set broad CORS headers for this specific route as well
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  // Handle preflight
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
   }
 
   // Check cache (ttl 1 hour)
@@ -69,40 +42,25 @@ app.all('/api/proxy', async (req, res) => {
 
   try {
     console.log(`[PROXY] Fetching: ${targetUrl}`);
-    
-    // Pass User-Agent to avoid being blocked by IPTV servers
-    const response = await fetch(targetUrl, { 
-      signal: AbortSignal.timeout(60000), // Increased to 60s for slow M3U loads
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-        'Accept': '*/*',
-        'Connection': 'keep-alive'
-      }
-    });
+    const response = await fetch(targetUrl, { signal: AbortSignal.timeout(30000) });
     
     if (!response.ok) {
-      console.error(`[PROXY_WARN] Target returned ${response.status}`);
+      console.warn(`[PROXY_WARNING] ${targetUrl} returned ${response.status}`);
       return res.status(response.status).json({ 
         error: `External server responded with status: ${response.status}`,
-        url: targetUrl
+        url: targetUrl 
       });
     }
 
     const content = await response.text();
     
     // Simple caching for large lists (live/vod)
-    if (useCache || content.length > 50000) {
+    if (useCache || content.length > 100000) {
       xtreamCache[targetUrl] = content;
       lastFetch = now;
     }
 
-    // Determine type from content or extension
-    if (content.trim().startsWith('#EXTM3U')) {
-      res.setHeader('Content-Type', 'text/plain');
-    } else {
-      res.setHeader('Content-Type', 'application/json');
-    }
-
+    res.setHeader('Content-Type', 'application/json');
     res.send(content);
   } catch (error: any) {
     console.error(`[PROXY_ERROR]: ${error.message}`);

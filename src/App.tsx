@@ -286,7 +286,7 @@ export default function App() {
       setLoading(false);
     } catch (err: any) {
       addLog(`ERR: CONNECTION_REJECTED - ${err.message}`);
-      setError('Invalid credentials or Server Unreachable');
+      setError(`CONNECTION_ERROR: ${err.message || 'Invalid credentials or Server Unreachable'}`);
       setLoading(false);
     }
   }, [auth, exportAuth, addLog]);
