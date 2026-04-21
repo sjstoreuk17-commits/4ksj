@@ -1,0 +1,24 @@
+{
+  "entities": {
+    "UserTracker": {
+      "title": "User Tracker State",
+      "description": "Stores the tracking activation date and notification preferences for a user.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string" },
+        "trackerActive": { "type": "boolean" },
+        "activatedAt": { "type": "string", "format": "date-time" },
+        "lastCheckedAt": { "type": "string", "format": "date-time" },
+        "xtreamSubDomain": { "type": "string" },
+        "xtreamUsername": { "type": "string" }
+      },
+      "required": ["userId", "trackerActive"]
+    }
+  },
+  "firestore": {
+    "/trackers/{userId}": {
+      "schema": "UserTracker",
+      "description": "Individual user tracking states indexed by their unique device/session ID."
+    }
+  }
+}

@@ -1,0 +1,92 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { M3UEntry, M3UPlaylist } from '../types';
+
+export function parseM3U(content: string): M3UPlaylist {
+  const lines = content.split('\n');
+  const entries: M3UEntry[] = [];
+  const categories = new Set<string>();
+
+  let currentEntry: Partial<M3UEntry> | null = null;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+
+    if (line.startsWith('#EXTINF:')) {
+      const extinf = line;
+      
+      // Parse attributes
+      const nameMatch = extinf.match(/tvg-name="([^"]*)"/) || extinf.match(/,([^,]*)$/);
+      const logoMatch = extinf.match(/tvg-logo="([^"]*)"/);
+      const groupMatch = extinf.match(/group-title="([^"]*)"/);
+
+      const name = nameMatch ? nameMatch[1].trim() : 'Unknown';
+      const logo = logoMatch ? logoMatch[1] : undefined;
+      const group = groupMatch ? groupMatch[1] : 'Uncategorized';
+
+      categories.add(group);
+
+      currentEntry = {
+        id: Math.random().toString(36).substr(2, 9),
+        name,
+        logo,
+        group,
+        raw: extinf
+      };
+    } else if (line && !line.startsWith('#')) {
+      if (currentEntry) {
+        currentEntry.url = line;
+        currentEntry.raw += '\n' + line;
+        
+        // Basic heuristic for type
+        const lowerGroup = currentEntry.group?.toLowerCase() || '';
+        const lowerName = currentEntry.name?.toLowerCase() || '';
+        
+        let type: M3UEntry['type'] = 'unknown';
+        if (lowerGroup.includes('movie') || lowerGroup.includes('film')) {
+          type = 'movie';
+        } else if (lowerGroup.includes('series') || lowerGroup.includes('show') || lowerGroup.includes('season')) {
+          type = 'series';
+        } else if (lowerGroup.includes('live') || lowerGroup.includes('tv')) {
+          type = 'live';
+        }
+
+        entries.push({ ...currentEntry, type } as M3UEntry);
+        currentEntry = null;
+      }
+    }
+  }
+
+  const movieCount = entries.filter(e => e.type === 'movie').length;
+  const seriesCount = entries.filter(e => e.type === 'series').length;
+
+  return {
+    entries,
+    categories: Array.from(categories).sort(),
+    stats: {
+      totalEntries: entries.length,
+      movieCount,
+      seriesCount,
+      categoryCount: categories.size
+    }
+  };
+}
+
+export function downloadM3U(name: string, content: string) {
+  const blob = new Blob(['#EXTM3U\n' + content], { type: 'text/plain' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${name.replace(/[^a-z0-9]/gi, '_')}.m3u`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+export function copyToClipboard(text: string) {
+  navigator.clipboard.writeText(text);
+}

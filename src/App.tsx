@@ -1,0 +1,2148 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { 
+  Terminal, 
+  Search, 
+  Download, 
+  Copy, 
+  Film, 
+  Tv, 
+  Activity, 
+  Home, 
+  Database,
+  ShieldAlert,
+  Cpu,
+  Monitor,
+  Skull,
+  Eye,
+  ChevronRight,
+  Loader2,
+  RefreshCcw,
+  Zap,
+  Filter,
+  Lock,
+  User,
+  Globe,
+  ArrowRight,
+  BarChart3,
+  Clock,
+  Layers,
+  Bell,
+  Radio,
+  Image as ImageIcon,
+  ExternalLink,
+  Shield,
+  QrCode,
+  Key,
+  FileText,
+  ChevronLeft
+} from 'lucide-react';
+import { XtreamService } from './lib/xtreamService';
+import { XtreamAuth, XtreamCategory, XtreamStream, XtreamSeries, XtreamSeriesInfo, XtreamEpisode, M3UEntry, M3UPlaylist } from './types';
+import { copyToClipboard, parseM3U } from './lib/m3uParser';
+import { auth as fbAuth, db } from './lib/firebase';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+
+type AuthMode = 'gateway' | 'xtream' | 'm3u' | 'admin';
+
+export default function App() {
+  const [authMode, setAuthMode] = useState<AuthMode>('gateway');
+  const [adminPass, setAdminPass] = useState('');
+  const [m3uUrl, setM3uUrl] = useState('');
+  
+  const [auth, setAuth] = useState<XtreamAuth>({ 
+    url: '', 
+    username: '', 
+    password: '' 
+  });
+
+  const [exportAuth] = useState<XtreamAuth>({
+    url: 'http://sjstorestar4k.store:80',
+    username: 'mXoK4b6xEf',
+    password: 'immaculate5visit'
+  });
+
+  const adminAuth: XtreamAuth = {
+    url: 'http://sjstorestar4k.store:80',
+    username: '928373838', 
+    password: '827338833'
+  };
+
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const [vodCats, setVodCats] = useState<XtreamCategory[]>([]);
+  const [seriesCats, setSeriesCats] = useState<XtreamCategory[]>([]);
+  const [currentStreams, setCurrentStreams] = useState<XtreamStream[]>([]);
+  const [currentSeries, setCurrentSeries] = useState<XtreamSeries[]>([]);
+  
+  const [currentView, setCurrentView] = useState<'home' | 'movies' | 'series'>('home');
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [categorySearchQuery, setCategorySearchQuery] = useState('');
+  const [logs, setLogs] = useState<string[]>(['[SYS] NEURAL INTERFACE ONLINE...']);
+  const [renderLimit, setRenderLimit] = useState(100);
+  const [showMobileCats, setShowMobileCats] = useState(false);
+  const [isDataLoaded, setIsDataLoaded] = useState(false);
+  
+  const [selectedSeriesForDetail, setSelectedSeriesForDetail] = useState<XtreamSeries | null>(null);
+
+  // M3U Data Mode State
+  const [isM3UMode, setIsM3UMode] = useState(false);
+  const [m3uPlaylist, setM3uPlaylist] = useState<M3UPlaylist | null>(null);
+
+  // Persistence Tracker State
+  const [trackerActive, setTrackerActive] = useState(false);
+  const [trackerEnabledAt, setTrackerEnabledAt] = useState<number | null>(null);
+  const [fbUser, setFbUser] = useState<any>(null);
+
+  const xtream = useMemo(() => {
+    if (!isLoggedIn || isM3UMode) return null;
+    return new XtreamService(auth, exportAuth);
+  }, [isLoggedIn, auth, exportAuth, isM3UMode]);
+
+  const addLog = useCallback((msg: string) => {
+    setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 30));
+  }, []);
+
+  const handleM3ULogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!m3uUrl) return;
+
+    setLoading(true);
+    setError(null);
+    addLog('INITIATING M3U DATA PIPELINE...');
+
+    try {
+      // 1. Try Xtream Tunneling first (standard Xtream M3U links have creds in params)
+      try {
+        const urlObj = new URL(m3uUrl);
+        const username = urlObj.searchParams.get('username');
+        const password = urlObj.searchParams.get('password');
+        const serverUrl = `${urlObj.protocol}//${urlObj.host}`;
+
+        if (username && password) {
+          addLog('XTREAM_CREDENTIALS DETECTED. UPGRADING SESSION...');
+          const newAuth = { url: serverUrl, username, password };
+          setAuth(newAuth);
+          await handleLogin(newAuth);
+          return;
+        }
+      } catch (urlErr) {
+        // Not a standard URL or parsing failed, fallback to raw fetch
+      }
+
+      // 2. Raw M3U Fallback (Standard M3U files)
+      addLog('RAW_M3U DETECTED. ANALYZING DATA STRUCTURE...');
+      const response = await fetch(`/api/proxy?url=${encodeURIComponent(m3uUrl)}`);
+      if (!response.ok) throw new Error('FAILED TO FETCH M3U DATA');
+      
+      const content = await response.text();
+      const playlist = parseM3U(content);
+      
+      setM3uPlaylist(playlist);
+      setIsM3UMode(true);
+      setCurrentView('home');
+      
+      const movieCats: XtreamCategory[] = playlist.categories
+        .filter(c => playlist.entries.some(e => e.group === c && e.type === 'movie'))
+        .map(c => ({ category_id: c, category_name: c, parent_id: 0 }));
+      setVodCats(movieCats);
+
+      const seriesCats: XtreamCategory[] = playlist.categories
+        .filter(c => playlist.entries.some(e => e.group === c && e.type === 'series'))
+        .map(c => ({ category_id: c, category_name: c, parent_id: 0 }));
+      setSeriesCats(seriesCats);
+
+      const movies: XtreamStream[] = playlist.entries
+        .filter(e => e.type === 'movie')
+        .map((e, i) => ({
+          num: i + 1,
+          name: e.name,
+          stream_type: 'movie',
+          stream_id: e.id,
+          stream_icon: e.logo || '',
+          category_id: e.group,
+          container_extension: 'ts',
+          direct_source: e.url,
+          rating: '', rating_5_0: 0, added: '',
+          custom_sid: ''
+        }));
+      setCurrentStreams(movies);
+
+      // Map & GROUP Series for M3U to enable EXTRACT_EPISODES for raw playlists
+      const seriesEntries = playlist.entries.filter(e => e.type === 'series');
+      const seriesMap = new Map<string, XtreamSeries & { localEpisodes?: XtreamEpisode[] }>();
+
+      seriesEntries.forEach(e => {
+        // Group by base name to treat individual M3U lines as one series
+        const baseName = e.name.replace(/\s*[sS]\d+\s*[eE]\d+.*$|\s*[sS]eason\s*\d+\s*[eE]pisode\s*\d+.*$/i, '').trim() || e.name;
+        
+        if (!seriesMap.has(baseName)) {
+          seriesMap.set(baseName, {
+            num: 0,
+            name: baseName,
+            series_id: Math.floor(Math.random() * 1000000),
+            cover: e.logo || '',
+            plot: 'M3U_SYNTHETIC_GROUP',
+            cast: '', director: '', genre: e.group, releaseDate: '', last_modified: '', rating: '', rating_5_0: 0,
+            backdrop_path: [], youtube_trailer: '', episode_run_time: '',
+            category_id: e.group,
+            localEpisodes: []
+          });
+        }
+        
+        const series = seriesMap.get(baseName)!;
+        const epMatch = e.name.match(/[eE](\d+)/);
+        const epNum = epMatch ? parseInt(epMatch[1]) : series.localEpisodes!.length + 1;
+        
+        series.localEpisodes!.push({
+          id: e.id,
+          episode_num: epNum,
+          season: 1,
+          title: e.name,
+          container_extension: 'ts',
+          info: { duration: '', movie_image: e.logo || '', plot: '', rating: '', release_date: '' },
+          raw_url: e.url // Custom field for M3U direct playback
+        } as any);
+      });
+
+      setCurrentSeries(Array.from(seriesMap.values()));
+      addLog(`M3U_PIPELINE_COMPLETE: ${playlist.entries.length} ITEMS EXTRACTED.`);
+      setLoading(false);
+
+    } catch (err: any) {
+      setError(`Login failed: ${err.message}`);
+      addLog(`ERR: M3U_TUNNEL_FAILURE - ${err.message}`);
+      setLoading(false);
+    }
+  };
+
+  const handleAdminAuth = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (adminPass === 'sajid122') {
+      setAuth(adminAuth);
+      handleLogin(adminAuth);
+    } else {
+      setError('ACCESS_DENIED: INVALID_MAINFRAME_KEY');
+      addLog('AUTH_FAILURE: UNAUTHORIZED_ADMIN_ATTEMPT_DETECTED');
+    }
+  };
+
+  const handleLogin = useCallback(async (providedAuth?: XtreamAuth) => {
+    const targetAuth = providedAuth || auth;
+    if (!targetAuth.url || !targetAuth.username || !targetAuth.password) {
+      return;
+    }
+    
+    setLoading(true);
+    setError(null);
+    addLog('HANDSHAKE INITIATED With REMOTE SERVER...');
+
+    try {
+      const service = new XtreamService(targetAuth, exportAuth);
+      await service.testConnection();
+      
+      addLog('ACCESS GRANTED. FETCHING SCHEMAS...');
+      const [vCats, sCats] = await Promise.all([
+        service.getVodCategories(),
+        service.getSeriesCategories()
+      ]);
+
+      setVodCats(vCats);
+      setSeriesCats(sCats);
+      
+      addLog('FETCHING ENTIRE CONTENT DATABASE...');
+      const [streams, series] = await Promise.all([
+        service.getVodStreams(),
+        service.getSeries()
+      ]);
+      
+      setCurrentStreams(streams);
+      setCurrentSeries(series);
+      setIsDataLoaded(true);
+      setIsLoggedIn(true);
+      setIsM3UMode(false);
+      
+      addLog('CONNECTION SECURE. CORE DATA SYNCED.');
+      setLoading(false);
+    } catch (err: any) {
+      addLog(`ERR: CONNECTION_REJECTED - ${err.message}`);
+      setError('Invalid credentials or Server Unreachable');
+      setLoading(false);
+    }
+  }, [auth, exportAuth, addLog]);
+
+  useEffect(() => {
+    if (!isLoggedIn && isInitializing) {
+      handleLogin();
+    }
+  }, [isLoggedIn, isInitializing, handleLogin]);
+
+  // Sync Firebase Tracker
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(fbAuth, async (user) => {
+      if (user) {
+        setFbUser(user);
+        const trackerRef = doc(db, 'trackers', user.uid);
+        const snap = await getDoc(trackerRef);
+        if (snap.exists()) {
+          const data = snap.data();
+          setTrackerActive(data.trackerActive);
+          setTrackerEnabledAt(data.activatedAt ? Math.floor(new Date(data.activatedAt).getTime() / 1000) : null);
+        }
+      } else {
+        signInAnonymously(fbAuth).catch(err => {
+          if (err.code === 'auth/admin-restricted-operation') {
+            addLog('ERR: TRACKER_AUTH_DISABLED. ENABLE "ANONYMOUS LOGIN" IN FIREBASE CONSOLE.');
+          } else {
+            console.error("FB Auth Error", err);
+          }
+        });
+      }
+    });
+    return () => unsubscribe();
+  }, [addLog]);
+
+  const toggleTracker = async () => {
+    if (!fbUser) return;
+    const newState = !trackerActive;
+    const now = new Date();
+    
+    try {
+      await setDoc(doc(db, 'trackers', fbUser.uid), {
+        userId: fbUser.uid,
+        trackerActive: newState,
+        activatedAt: newState ? now.toISOString() : (trackerEnabledAt ? new Date(trackerEnabledAt * 1000).toISOString() : null),
+        xtreamUsername: auth.username,
+        lastCheckedAt: now.toISOString()
+      }, { merge: true });
+      
+      setTrackerActive(newState);
+      if (newState) {
+        setTrackerEnabledAt(Math.floor(now.getTime() / 1000));
+        addLog(`NEURAL_TRACKER ACTIVATED: MONITORING STARTED FROM ${now.toLocaleTimeString()}`);
+      } else {
+        addLog('NEURAL_TRACKER DEACTIVATED.');
+      }
+    } catch (e) {
+      addLog('ERR: TRACKER_SYNC_FAILED');
+    }
+  };
+
+  const handleLogout = () => {
+    setIsLoggedIn(false);
+    setAuthMode('gateway');
+    setIsM3UMode(false);
+    setM3uPlaylist(null);
+    setVodCats([]);
+    setSeriesCats([]);
+    setCurrentStreams([]);
+    setCurrentSeries([]);
+    setAuth({ url: '', username: '', password: '' });
+    localStorage.removeItem('xtream_auth_active');
+    addLog('SESSION TERMINATED.');
+  };
+
+  // Derived dashboard data
+  const recentlyAddedMovies = useMemo(() => {
+    return [...currentStreams].sort((a, b) => {
+      const timeA = !isNaN(Number(a.added)) ? Number(a.added) : new Date(a.added).getTime() / 1000;
+      const timeB = !isNaN(Number(b.added)) ? Number(b.added) : new Date(b.added).getTime() / 1000;
+      return (timeB || 0) - (timeA || 0);
+    });
+  }, [currentStreams]);
+
+  const recentlyAddedSeries = useMemo(() => {
+    return [...currentSeries].sort((a, b) => {
+      const timeA = !isNaN(Number(a.last_modified)) ? Number(a.last_modified) : new Date(a.last_modified).getTime() / 1000;
+      const timeB = !isNaN(Number(b.last_modified)) ? Number(b.last_modified) : new Date(b.last_modified).getTime() / 1000;
+      return (timeB || 0) - (timeA || 0);
+    });
+  }, [currentSeries]);
+
+  const newArrivals = useMemo(() => {
+    if (!trackerEnabledAt) return [];
+    const movies = currentStreams.filter(m => Number(m.added) > trackerEnabledAt);
+    const series = currentSeries.filter(s => Number(s.last_modified) > trackerEnabledAt);
+    return [...movies, ...series].sort((a, b) => {
+      const timeA = Number((a as any).added || (a as any).last_modified);
+      const timeB = Number((b as any).added || (b as any).last_modified);
+      return timeB - timeA;
+    });
+  }, [currentStreams, currentSeries, trackerEnabledAt]);
+
+  const displayList = useMemo(() => {
+    const list = currentView === 'movies' ? currentStreams : currentSeries;
+    let items = [...list];
+    
+    if (selectedCategory === 'recently_added') {
+      if (currentView === 'movies') {
+        items = recentlyAddedMovies;
+      } else {
+        items = recentlyAddedSeries;
+      }
+    } else if (selectedCategory === 'new_arrivals') {
+      items = newArrivals.filter(item => {
+        if (currentView === 'movies') return (item as any).stream_id;
+        return (item as any).series_id;
+      }) as any;
+    } else if (selectedCategory) {
+      items = list.filter(i => i.category_id === selectedCategory);
+    }
+
+    const filtered = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
+    return filtered.slice(0, renderLimit);
+  }, [currentStreams, currentSeries, currentView, searchQuery, renderLimit, selectedCategory, recentlyAddedMovies, recentlyAddedSeries, newArrivals]);
+
+  const [categorySelection, setCategorySelection] = useState<{ id: string, name: string } | null>(null);
+
+  const downloadFullCategory = async (catId: string, catName: string) => {
+    if (!xtream && !isM3UMode) return;
+    addLog(`DUMP_INITIATED: CATEGORY [${catName}]...`);
+    setLoading(true);
+    
+    try {
+      const items = selectedCategory === 'recently_added' ? (currentView === 'movies' ? recentlyAddedMovies : recentlyAddedSeries) : (currentView === 'movies' ? currentStreams.filter(s => s.category_id === catId) : currentSeries.filter(s => s.category_id === catId));
+      
+      let m3u = "";
+      if (isM3UMode) {
+        m3u = "#EXTM3U\r\n";
+        items.forEach(item => {
+          const icon = 'stream_icon' in item ? item.stream_icon : item.cover;
+          const url = (item as any).direct_source;
+          m3u += `#EXTINF:-1 tvg-id="" tvg-name="${item.name}" tvg-logo="${icon}" group-title="${catName}",${item.name}\r\n${url}\r\n`;
+        });
+      } else if (xtream) {
+        if (currentView === 'series' && items.length > 0) {
+          addLog(`PREPARING_SERIES_METADATA [${items.length} SHOWS]...`);
+          m3u = await xtream.getBatchSeriesEpisodes(items as XtreamSeries[]);
+        } else {
+          m3u = xtream.generateCategoryM3U(items, 'movie');
+        }
+      }
+      
+      if (!m3u) throw new Error("Empty Payload");
+
+      const blob = new Blob([m3u], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      // Use standard category name for filename
+      const cleanName = catName.replace(/[^\w\s]/gi, '').replace(/\s+/g, '_');
+      a.download = `${cleanName}.m3u`;
+      a.click();
+      URL.revokeObjectURL(url);
+      addLog(`DUMP_COMPLETE: ${catName} EXPORTED SUCCESSFULLY.`);
+    } catch (e) {
+      addLog(`ERR: EXPORT_FAILED [${catName}]`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const augmentedVodCats = useMemo(() => [
+    { category_id: 'new_arrivals', category_name: `🔥 NEW SINCE TRACKING (${newArrivals.filter(i => (i as any).stream_id).length})` },
+    { category_id: 'recently_added', category_name: '★ RECENTLY ADDED 100' },
+    ...vodCats
+  ], [vodCats, newArrivals]);
+
+  const augmentedSeriesCats = useMemo(() => [
+    { category_id: 'new_arrivals', category_name: `🔥 NEW SINCE TRACKING (${newArrivals.filter(i => (i as any).series_id).length})` },
+    { category_id: 'recently_added', category_name: '★ RECENTLY ADDED 50' },
+    ...seriesCats
+  ], [seriesCats, newArrivals]);
+
+  if (isInitializing) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-[#00FF00] font-mono flex flex-col items-center justify-center p-4">
+        <Skull className="w-16 h-16 mb-6 animate-bounce" />
+        <div className="space-y-4 text-center">
+          <h1 className="text-3xl font-black tracking-[0.3em] glow-text uppercase">NEURAL-SHIELD</h1>
+          <div className="flex items-center justify-center gap-3 text-xs opacity-60">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            <span className="uppercase tracking-[0.2em]">Authenticating Hardware IDs...</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isLoggedIn) {
+    return (
+      <div className="min-h-screen bg-[#050505] text-[#00FF00] font-mono flex items-center justify-center p-4 relative overflow-hidden">
+        {/* Hacker Aesthetic Background Layers */}
+        <MatrixRain />
+        <TerminalBootLog />
+        
+        {/* Scanning Line Effect */}
+        <div className="absolute inset-0 pointer-events-none z-10 overflow-hidden">
+          <div className="w-full h-[100px] bg-gradient-to-b from-transparent via-[#00FF00]/10 to-transparent absolute animate-[scan_6s_linear_infinite]" />
+        </div>
+        
+        {/* CRT Flicker Overlay */}
+        <div className="absolute inset-0 pointer-events-none z-20 opacity-[0.03] bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_2px,3px_100%]" />
+
+        <div className="max-w-md w-full space-y-12 relative z-30">
+          <div className="text-center space-y-4">
+            <motion.div
+              initial={{ scale: 0.5, opacity: 0, filter: 'blur(10px)' }}
+              animate={{ scale: 1, opacity: 1, filter: 'blur(0px)' }}
+              transition={{ type: "spring", stiffness: 100, bounce: 0.5 }}
+              className="relative inline-block"
+            >
+              <Skull className="w-24 h-24 mx-auto mb-2 text-[#00FF00] drop-shadow-[0_0_20px_rgba(0,255,0,0.6)] animate-pulse" />
+              <div className="absolute -inset-4 border border-[#00FF00]/20 rounded-full animate-[spin_10s_linear_infinite] border-dashed" />
+              <div className="absolute -inset-8 border border-[#00FF00]/10 rounded-full animate-[spin_15s_linear_reverse_infinite] border-dotted" />
+            </motion.div>
+            
+            <div className="space-y-1">
+              <h1 className="text-5xl font-black tracking-[0.5em] glow-text uppercase relative">
+                <span className="relative z-10">NEURAL-SHIELD</span>
+                <span className="absolute inset-0 text-red-500 opacity-20 blur-[2px] animate-[glitch_2s_infinite]">NEURAL-SHIELD</span>
+                <span className="absolute inset-0 text-blue-500 opacity-20 blur-[2px] animate-[glitch_2.5s_infinite_reverse]">NEURAL-SHIELD</span>
+              </h1>
+              <div className="flex items-center justify-center gap-2">
+                <div className="h-[1px] w-8 bg-[#00FF00]/40" />
+                <p className="text-[10px] opacity-40 uppercase tracking-[0.4em] font-black">CORTEX_OS // v3.4.1_SECURE</p>
+                <div className="h-[1px] w-8 bg-[#00FF00]/40" />
+              </div>
+            </div>
+          </div>
+
+          <AnimatePresence mode="wait">
+            {authMode === 'gateway' && (
+              <motion.div 
+                key="gateway"
+                initial={{ opacity: 0, filter: 'blur(20px)' }}
+                animate={{ opacity: 1, filter: 'blur(0px)' }}
+                exit={{ opacity: 0, scale: 1.1, filter: 'blur(20px)' }}
+                className="grid gap-6"
+              >
+                {[
+                  { id: 'xtream', icon: QrCode, label: 'Login with Xtream', sub: 'SYNC_API_INTERFACE' },
+                  { id: 'm3u', icon: FileText, label: 'Login with M3U', sub: 'EXTRACT_PAYLOAD_CONFIG' }
+                ].map((btn, idx) => (
+                  <motion.button 
+                    key={btn.id}
+                    initial={{ x: idx % 2 === 0 ? -50 : 50, opacity: 0 }}
+                    animate={{ x: 0, opacity: 1 }}
+                    transition={{ delay: 0.2 + idx * 0.1 }}
+                    onClick={() => setAuthMode(btn.id as any)}
+                    className="w-full group hacker-border-next bg-black/60 p-6 flex items-center gap-6 hover:bg-[#00FF00]/10 transition-all border-[#00FF00]/20 hover:border-[#00FF00] overflow-hidden relative"
+                  >
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-[#00FF00]/5 to-transparent -translate-x-full group-hover:translate-x-full transition-transform duration-1000" />
+                    
+                    <div className="p-4 bg-[#00FF00]/5 border border-[#00FF00]/20 rounded group-hover:bg-[#00FF00]/20 transition-all group-hover:scale-110">
+                      <btn.icon className="w-8 h-8" />
+                    </div>
+                    <div className="text-left relative z-10">
+                      <div className="text-sm font-black uppercase tracking-[0.2em]">{btn.label}</div>
+                      <div className="text-[9px] opacity-30 font-bold uppercase mt-1 tracking-widest">{btn.sub}</div>
+                    </div>
+                    <div className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity">
+                      <div className="flex gap-1">
+                        <div className="w-1 h-1 bg-[#00FF00] animate-pulse" />
+                        <div className="w-1 h-1 bg-[#00FF00] animate-pulse [animation-delay:0.2s]" />
+                        <div className="w-1 h-1 bg-[#00FF00] animate-pulse [animation-delay:0.4s]" />
+                      </div>
+                    </div>
+                  </motion.button>
+                ))}
+
+                <div className="pt-8 text-center">
+                  <motion.button 
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 0.4 }}
+                    whileHover={{ opacity: 1, scale: 1.05 }}
+                    onClick={() => { setAuthMode('admin'); setError(null); }}
+                    className="flex items-center gap-2 mx-auto text-[10px] uppercase font-black tracking-widest px-4 py-2 border border-[#00FF00]/10 hover:border-[#00FF00]/40 transition-all"
+                  >
+                    <Shield className="w-3 h-3 text-red-500" /> [ROOT_TERMINAL_ACCESS]
+                  </motion.button>
+                </div>
+              </motion.div>
+            )}
+
+            {authMode === 'xtream' && (
+              <motion.div 
+                key="xtream"
+                initial={{ x: 20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -20, opacity: 0 }}
+              >
+                <form onSubmit={(e) => { e.preventDefault(); handleLogin(); }} className="hacker-border bg-black/40 p-8 space-y-6">
+                  <div className="flex items-center gap-3 mb-6">
+                    <button onClick={() => setAuthMode('gateway')} className="p-2 hover:bg-[#00FF00]/10 rounded-full transition-colors">
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <span className="text-xs uppercase font-black tracking-widest">Xtream Configuration</span>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <Globe className="w-3 h-3" /> Server Protocol
+                      </label>
+                      <input 
+                        type="url" 
+                        value={auth.url} 
+                        onChange={e => setAuth({...auth, url: e.target.value})}
+                        placeholder="http://server.url:port"
+                        className="w-full bg-black/60 border border-[#00FF00]/20 p-3 text-xs outline-none focus:border-[#00FF00] transition-all"
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <User className="w-3 h-3" /> Identity Code
+                      </label>
+                      <input 
+                        type="text" 
+                        value={auth.username} 
+                        onChange={e => setAuth({...auth, username: e.target.value})}
+                        placeholder="Username"
+                        className="w-full bg-black/60 border border-[#00FF00]/20 p-3 text-xs outline-none focus:border-[#00FF00] transition-all"
+                        required
+                      />
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <Lock className="w-3 h-3" /> Decryption Key
+                      </label>
+                      <input 
+                        type="password" 
+                        value={auth.password} 
+                        onChange={e => setAuth({...auth, password: e.target.value})}
+                        placeholder="Password"
+                        className="w-full bg-black/60 border border-[#00FF00]/20 p-3 text-xs outline-none focus:border-[#00FF00] transition-all"
+                        required
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    type="submit" 
+                    disabled={loading}
+                    className="w-full btn-hacker flex items-center justify-center gap-2 py-4 group"
+                  >
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Key className="w-5 h-5" />}
+                    {loading ? 'BYPASSING_SECURITY...' : 'INITIALIZE_SYNC'}
+                  </button>
+
+                  {error && (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-red-500 text-[10px] text-center uppercase font-bold mt-2">
+                       ACCESS_ERROR: {error}
+                    </motion.div>
+                  )}
+                </form>
+              </motion.div>
+            )}
+
+            {authMode === 'm3u' && (
+              <motion.div 
+                key="m3u"
+                initial={{ x: 20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -20, opacity: 0 }}
+              >
+                <form onSubmit={handleM3ULogin} className="hacker-border bg-black/40 p-8 space-y-6">
+                  <div className="flex items-center gap-3 mb-6">
+                    <button onClick={() => setAuthMode('gateway')} className="p-2 hover:bg-[#00FF00]/10 rounded-full transition-colors">
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <span className="text-xs uppercase font-black tracking-widest">M3U Data Tunneling</span>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <Globe className="w-3 h-3" /> M3U URL / SOURCE
+                      </label>
+                      <input 
+                        type="url" 
+                        value={m3uUrl} 
+                        onChange={e => setM3uUrl(e.target.value)}
+                        placeholder="http://iptv.provider/playlist.m3u"
+                        className="w-full bg-black/60 border border-[#00FF00]/20 p-3 text-xs outline-none focus:border-[#00FF00] transition-all"
+                        required
+                      />
+                    </div>
+                    <p className="text-[8px] opacity-30 uppercase text-center leading-relaxed">
+                      Provider must support CORS extraction. If blocked, local file injection is required.
+                    </p>
+                  </div>
+
+                  <button 
+                    type="submit" 
+                    disabled={loading}
+                    className="w-full btn-hacker flex items-center justify-center gap-2 py-4 group"
+                  >
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Activity className="w-5 h-5" />}
+                    {loading ? 'EXTRACTING_PAYLOAD...' : 'START_EXTRACTION'}
+                  </button>
+
+                  {error && (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-red-500 text-[10px] text-center uppercase font-bold mt-2">
+                       PAYLOAD_ERROR: {error}
+                    </motion.div>
+                  )}
+                </form>
+              </motion.div>
+            )}
+
+            {authMode === 'admin' && (
+              <motion.div 
+                key="admin"
+                initial={{ x: 20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -20, opacity: 0 }}
+              >
+                <form onSubmit={handleAdminAuth} className="hacker-border bg-black/40 p-8 space-y-6">
+                  <div className="flex items-center gap-3 mb-6">
+                    <button onClick={() => setAuthMode('gateway')} className="p-2 hover:bg-[#00FF00]/10 rounded-full transition-colors">
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <span className="text-xs uppercase font-black tracking-widest text-red-500">ROOT // ADMIN CRYPT</span>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <ShieldAlert className="w-3 h-3 text-red-500" /> Administrative Keypad
+                      </label>
+                      <input 
+                        type="password" 
+                        value={adminPass} 
+                        onChange={e => setAdminPass(e.target.value)}
+                        placeholder="ENTER_ROOT_KEY"
+                        className="w-full bg-black/60 border border-red-500/20 p-3 text-xs outline-none focus:border-red-500 transition-all text-red-500"
+                        required
+                        autoFocus
+                      />
+                    </div>
+                  </div>
+
+                  <button 
+                    type="submit" 
+                    disabled={loading}
+                    className="w-full border border-red-500/40 bg-red-500/10 hover:bg-red-500 hover:text-black text-red-500 font-black uppercase text-xs transition-all flex items-center justify-center gap-2 py-4"
+                  >
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Lock className="w-5 h-5" />}
+                    {loading ? 'OVERRIDING_PROTOCOL...' : 'EXECUTE_ROOT_ACCESS'}
+                  </button>
+
+                  {error && (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-red-500 text-[10px] text-center uppercase font-bold mt-2">
+                       ACCESS_DENIED: {error}
+                    </motion.div>
+                  )}
+                </form>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          <footer className="text-center opacity-20 text-[9px] uppercase tracking-tighter">
+            Neural Tunnel Status: {loading ? 'DIVERGING' : 'STANDBY'} // Protocol: SECURE
+          </footer>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#020202] text-[#00FF00] font-mono flex flex-col pb-16 lg:pb-0">
+      {/* Top Header */}
+      <header className="h-16 border-b border-[#00FF00]/10 px-4 lg:px-6 flex items-center justify-between bg-black/80 backdrop-blur-md sticky top-0 z-50">
+        <div className="flex items-center gap-3 lg:gap-4">
+          <Radio 
+            className={`w-5 h-5 lg:w-6 h-6 ${trackerActive ? 'text-[#00FF00] animate-pulse' : 'text-red-500 opacity-50'}`} 
+            onClick={toggleTracker}
+          />
+          <div>
+            <h2 className="text-[10px] lg:text-sm font-black uppercase tracking-widest glow-text">NEURAL // COMMAND</h2>
+            <div className="flex items-center gap-2 text-[7px] lg:text-[8px] opacity-40">
+              <span className={`w-1.5 h-1.5 rounded-full ${trackerActive ? 'bg-[#00FF00] animate-ping' : 'bg-red-500'}`} />
+              TRACKER: {trackerActive ? 'ACTIVE' : 'OFFLINE'} | SESSION: {auth.username.toUpperCase()}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4 lg:gap-6">
+          {newArrivals.length > 0 && (
+            <button 
+              onClick={() => { setSelectedCategory('new_arrivals'); setCurrentView( (newArrivals[0] as any).stream_id ? 'movies' : 'series' )}}
+              className="relative p-2 bg-[#00FF00]/10 border border-[#00FF00]/40 text-[#00FF00]"
+            >
+              <Bell className="w-4 h-4 animate-bounce" />
+              <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[8px] px-1 rounded-full animate-pulse">{newArrivals.length}</span>
+            </button>
+          )}
+          <div className="hidden lg:flex items-center gap-4 border-l border-[#00FF00]/10 pl-6">
+            <Stat label="SINCE" val={trackerEnabledAt ? new Date(trackerEnabledAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A'} />
+            <Stat label="NEW_DRIPS" val={newArrivals.length.toString()} />
+            <Stat label="CORE" val="STABLE" />
+          </div>
+          <button 
+            onClick={handleLogout}
+            className="text-[8px] lg:text-[10px] uppercase font-bold border border-red-500/30 px-2 lg:px-3 py-1 hover:bg-red-500 hover:text-black transition-all"
+          >
+            Kill Session
+          </button>
+        </div>
+      </header>
+
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Navigation Rail (Desktop Only) */}
+        <aside className="hidden lg:flex w-20 lg:w-64 border-r border-[#00FF00]/10 flex-col bg-black/40">
+          <div className="flex-1 py-6 flex flex-col gap-2">
+            <SidebarBtn 
+              icon={<Home />} 
+              label="Overview" 
+              active={currentView === 'home'} 
+              onClick={() => { setCurrentView('home'); setSelectedCategory(null); }} 
+            />
+            <SidebarBtn 
+              icon={<Film />} 
+              label="Movie Archive" 
+              active={currentView === 'movies'} 
+              onClick={() => { setCurrentView('movies'); setSelectedCategory(null); }} 
+            />
+            <SidebarBtn 
+              icon={<Tv />} 
+              label="Series Vault" 
+              active={currentView === 'series'} 
+              onClick={() => { setCurrentView('series'); setSelectedCategory(null); }} 
+            />
+
+            <div className="my-6 px-6">
+              <div className="h-[1px] bg-[#00FF00]/10 w-full" />
+            </div>
+
+            <div className="px-6 mb-4 flex items-center justify-between">
+              <span className="text-[9px] uppercase opacity-40 font-bold tracking-tighter">DATA_SCHEMAS</span>
+              {selectedCategory && (
+                <button onClick={() => downloadFullCategory(selectedCategory, "Category")} className="text-[#00FF00] hover:scale-110 transition-transform">
+                  <Download className="w-3 h-3" />
+                </button>
+              )}
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-4 space-y-1 custom-scrollbar">
+              {(currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats).map(cat => (
+                <button
+                  key={cat.category_id}
+                  onClick={() => setCategorySelection({ id: cat.category_id, name: cat.category_name })}
+                  className={`w-full text-left text-[10px] p-2 hover:bg-[#00FF00]/5 transition-all truncate uppercase ${
+                    selectedCategory === cat.category_id ? 'bg-[#00FF00] text-black font-bold' : 'opacity-60'
+                  }`}
+                >
+                  &gt; {cat.category_name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="p-4 border-t border-[#00FF00]/10 bg-black/60 h-40 overflow-hidden hidden lg:block">
+             <div className="flex items-center gap-2 text-[9px] opacity-40 uppercase mb-2">
+               <Activity className="w-3 h-3" /> Live Feed
+             </div>
+             <div className="space-y-1 text-[8px] opacity-30 font-mono">
+               {logs.map((log, i) => <div key={i} className="truncate">{log}</div>)}
+             </div>
+          </div>
+        </aside>
+
+        {/* Mobile Categories Overlay */}
+        <AnimatePresence>
+          {showMobileCats && (
+            <motion.div 
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              className="lg:hidden fixed inset-y-0 left-0 w-4/5 max-w-xs bg-[#050505] z-50 p-6 flex flex-col hacker-border border-r border-[#00FF00]/30 shadow-[0_0_20px_rgba(0,255,0,0.2)]"
+            >
+               <div className="flex items-center justify-between mb-8">
+                 <h3 className="text-sm font-black uppercase tracking-widest text-[#00FF00]">Categories</h3>
+                 <button onClick={() => setShowMobileCats(false)} className="text-[#00FF00]/40"><RefreshCcw className="w-5 h-5 rotate-45" /></button>
+               </div>
+
+               <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar">
+                 {(currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats).map(cat => (
+                    <button
+                      key={cat.category_id}
+                      onClick={() => setCategorySelection({ id: cat.category_id, name: cat.category_name })}
+                      className={`w-full text-left text-[11px] p-3 border transition-all truncate uppercase ${
+                        selectedCategory === cat.category_id ? 'border-[#00FF00] bg-[#00FF00]/10 text-[#00FF00] font-bold' : 'border-[#00FF00]/10 opacity-60'
+                      }`}
+                    >
+                      {cat.category_name}
+                    </button>
+                 ))}
+               </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Content Console */}
+        <main className="flex-1 overflow-y-auto custom-scrollbar bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-[#0a0a0a] to-black">
+          <div className="max-w-7xl mx-auto p-4 lg:p-8 space-y-8 lg:space-y-12">
+            
+            {loading ? (
+              <div className="h-[60vh] flex flex-col items-center justify-center space-y-4">
+                <Loader2 className="w-12 h-12 text-[#00FF00] animate-spin" />
+                <p className="text-xs uppercase tracking-[0.5em] animate-pulse">Synchronizing Neural Path...</p>
+              </div>
+            ) : (
+              <AnimatePresence mode="wait">
+                <motion.div
+                  key={currentView + selectedCategory}
+                  initial={{ opacity: 0, scale: 0.98 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 0.98 }}
+                  transition={{ duration: 0.2 }}
+                >
+                  {currentView === 'home' ? (
+                    <div className="grid grid-cols-1 gap-8 lg:gap-12">
+                      <div className="space-y-6">
+                        <header className="flex items-center justify-between border-b border-[#00FF00]/20 pb-4">
+                          <div className="flex items-center gap-3">
+                            <Zap className="w-5 h-5 lg:w-6 lg:h-6 text-yellow-400" />
+                            <h3 className="text-sm lg:text-xl font-bold uppercase italic tracking-tighter">Recently Cracked Movies (Unlimited)</h3>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              setCurrentView('movies');
+                              setCategorySelection({ id: 'recently_added', name: 'Recently Cracked Movies' });
+                            }} 
+                            className="text-[8px] lg:text-[10px] uppercase font-bold opacity-40 hover:opacity-100 flex items-center gap-2"
+                          >
+                             Full Archive <ChevronRight className="w-3 h-3" />
+                          </button>
+                        </header>
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                          {recentlyAddedMovies.slice(0, 100).map(item => (
+                            <React.Fragment key={item.stream_id}>
+                              <ContentCard 
+                                item={item} 
+                                type="movie" 
+                                xtream={xtream!} 
+                                addLog={addLog} 
+                                categories={vodCats}
+                                isM3UMode={isM3UMode}
+                              />
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="space-y-6">
+                        <header className="flex items-center justify-between border-b border-[#00FF00]/20 pb-4 text-blue-400">
+                          <div className="flex items-center gap-3">
+                            <BarChart3 className="w-5 h-5 lg:w-6 lg:h-6" />
+                            <h3 className="text-sm lg:text-xl font-bold uppercase italic tracking-tighter">Recently Added Web Series (Unlimited)</h3>
+                          </div>
+                          <button 
+                            onClick={() => {
+                              setCurrentView('series');
+                              setCategorySelection({ id: 'recently_added', name: 'Recently Added Web Series' });
+                            }} 
+                            className="text-[8px] lg:text-[10px] uppercase font-bold opacity-40 hover:opacity-100 flex items-center gap-2"
+                          >
+                             Full Archive <ChevronRight className="w-3 h-3" />
+                          </button>
+                        </header>
+                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                          {recentlyAddedSeries.slice(0, 100).map(item => (
+                            <React.Fragment key={item.series_id}>
+                              <ContentCard 
+                                item={item} 
+                                type="series" 
+                                xtream={xtream!} 
+                                addLog={addLog} 
+                                categories={seriesCats}
+                                onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
+                                isM3UMode={isM3UMode}
+                              />
+                            </React.Fragment>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-6 lg:space-y-8">
+                      {!selectedCategory ? (
+                        <div className="space-y-8">
+                          <header className="flex flex-col md:flex-row md:items-center justify-between border-b border-[#00FF00]/20 pb-4 gap-4">
+                            <h3 className="text-lg lg:text-2xl font-black uppercase italic tracking-tight glow-text flex items-center gap-4">
+                              <Database className="w-5 h-5 lg:w-6 lg:h-6" />
+                              Select {currentView === 'movies' ? 'Movie' : 'Series'} Category
+                            </h3>
+                            
+                            <div className="relative hacker-border px-3 py-1 bg-black/40 flex items-center gap-2">
+                              <Filter className="w-3 h-3 opacity-40 text-[#00FF00]" />
+                              <input 
+                                value={categorySearchQuery}
+                                onChange={e => setCategorySearchQuery(e.target.value)}
+                                placeholder="FILTER_CATEGORIES..."
+                                className="bg-transparent border-none outline-none text-[9px] lg:text-[10px] uppercase w-full lg:w-48 text-[#00FF00]"
+                              />
+                            </div>
+                          </header>
+
+                          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                            {(currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats)
+                              .filter(cat => cat.category_name.toLowerCase().includes(categorySearchQuery.toLowerCase()))
+                              .map(cat => (
+                                <button
+                                  key={cat.category_id}
+                                  onClick={() => {
+                                    setCategorySelection({ id: cat.category_id, name: cat.category_name });
+                                    setCategorySearchQuery(''); // Reset search when category selection is initiated
+                                  }}
+                                className="hacker-border bg-black/40 hover:bg-[#00FF00]/10 p-6 flex flex-col items-center justify-center text-center group transition-all"
+                              >
+                                {cat.category_id === 'recently_added' ? (
+                                  <Zap className="w-8 h-8 mb-3 text-yellow-500 group-hover:scale-125 transition-transform" />
+                                ) : (
+                                  <Layers className="w-8 h-8 mb-3 opacity-40 group-hover:opacity-100 group-hover:scale-110 transition-all text-[#00FF00]" />
+                                )}
+                                <span className="text-[10px] font-black uppercase tracking-tight line-clamp-2">{cat.category_name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <header className="flex flex-col md:flex-row md:items-center justify-between border-b border-[#00FF00]/20 pb-4 gap-4">
+                            <div className="flex items-center gap-4">
+                              <button 
+                                onClick={() => setSelectedCategory(null)}
+                                className="text-[#00FF00]/40 hover:text-[#00FF00] flex items-center gap-2 text-[10px] uppercase font-black"
+                              >
+                                &lt; BACK
+                              </button>
+                              <div className="h-6 w-[1px] bg-[#00FF00]/10 mx-2" />
+                              <Database className="w-5 h-5 lg:w-6 lg:h-6" />
+                              <h3 className="text-lg lg:text-2xl font-black uppercase italic tracking-tight glow-text">
+                                {(currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats).find(c => c.category_id === selectedCategory)?.category_name}
+                              </h3>
+                            </div>
+                            
+                            <div className="flex items-center gap-3 lg:gap-4">
+                               <div className="relative flex-1 hacker-border px-3 py-1 bg-black/40 flex items-center gap-2">
+                                 <Search className="w-3 h-3 opacity-40" />
+                                 <input 
+                                   value={searchQuery}
+                                   onChange={e => setSearchQuery(e.target.value)}
+                                   placeholder="FILTER_STREAM..."
+                                   className="bg-transparent border-none outline-none text-[9px] lg:text-[10px] uppercase w-full lg:w-40"
+                                 />
+                               </div>
+                               <button 
+                                 onClick={() => {
+                                   const catName = (currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats).find(c => c.category_id === selectedCategory)?.category_name || "Category";
+                                   downloadFullCategory(selectedCategory!, catName);
+                                 }} 
+                                 className="btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2"
+                               >
+                                 <Download className="w-3 h-3" /> DUMP
+                               </button>
+                            </div>
+                          </header>
+
+                          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                            {displayList.map(item => (
+                                <React.Fragment key={(item as any).stream_id || (item as any).series_id}>
+                                  <ContentCard 
+                                    item={item} 
+                                    type={currentView === 'movies' ? 'movie' : 'series'} 
+                                    xtream={xtream!} 
+                                    addLog={addLog} 
+                                    categories={currentView === 'movies' ? vodCats : seriesCats}
+                                    onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
+                                    isM3UMode={isM3UMode}
+                                  />
+                                </React.Fragment>
+                              ))
+                            }
+                          </div>
+
+                          {(displayList.length >= 100) && (
+                            <div className="flex justify-center pt-8">
+                              <button 
+                                onClick={() => setRenderLimit(prev => prev + 100)}
+                                className="btn-hacker py-3 flex items-center gap-2 group"
+                              >
+                                <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                                LOAD_MORE_PACKETS
+                              </button>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  )}
+                </motion.div>
+              </AnimatePresence>
+            )}
+            
+          </div>
+        </main>
+      </div>
+
+      {/* Mobile Bottom Navigation */}
+      <nav className="lg:hidden fixed bottom-0 left-0 right-0 h-16 bg-black border-t border-[#00FF00]/20 flex items-center justify-around px-2 z-[60] backdrop-blur-lg">
+         <MobileNavBtn 
+           active={currentView === 'home'} 
+           icon={<Home className="w-5 h-5" />} 
+           label="Home" 
+           onClick={() => { setCurrentView('home'); setSelectedCategory(null); }} 
+         />
+         <MobileNavBtn 
+           active={currentView === 'movies'} 
+           icon={<Film className="w-5 h-5" />} 
+           label="Movies" 
+           onClick={() => { setCurrentView('movies'); setSelectedCategory(null); }} 
+         />
+         <MobileNavBtn 
+           active={currentView === 'series'} 
+           icon={<Tv className="w-5 h-5" />} 
+           label="Series" 
+           onClick={() => { setCurrentView('series'); setSelectedCategory(null); }} 
+         />
+         <MobileNavBtn 
+           active={showMobileCats} 
+           icon={<Filter className="w-5 h-5" />} 
+           label="Filter" 
+           onClick={() => setShowMobileCats(!showMobileCats)} 
+           disabled={currentView === 'home'}
+         />
+      </nav>
+
+      {/* Category Action Prompt Modal */}
+      <AnimatePresence>
+        {categorySelection && (
+          <div className="fixed inset-0 bg-black/80 backdrop-blur-sm z-[100] flex items-center justify-center p-6">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="w-full max-w-sm hacker-border bg-[#0a0a0a] p-8 space-y-6"
+            >
+              <div className="text-center space-y-2">
+                <div className="text-[10px] uppercase opacity-40 font-black tracking-[0.3em] overflow-hidden truncate px-4">{categorySelection.name}</div>
+                <h3 className="text-sm font-black uppercase text-[#00FF00]">Choose Action</h3>
+              </div>
+
+              <div className="grid gap-3">
+                <button 
+                  onClick={() => {
+                    setSelectedCategory(categorySelection.id);
+                    setCategorySelection(null);
+                    setShowMobileCats(false);
+                  }}
+                  className="w-full btn-hacker flex items-center justify-center gap-3 py-4 group"
+                >
+                  <Eye className="w-5 h-5 group-hover:scale-110 transition-transform" />
+                  <span>OPEN_CATEGORY</span>
+                </button>
+                
+                <button 
+                  onClick={() => {
+                    downloadFullCategory(categorySelection.id, categorySelection.name);
+                    setCategorySelection(null);
+                    setShowMobileCats(false);
+                  }}
+                  className="w-full border border-[#00FF00]/40 bg-[#00FF00]/5 hover:bg-[#00FF00] hover:text-black py-4 font-black uppercase text-xs flex items-center justify-center gap-3 transition-all"
+                >
+                  <Download className="w-5 h-5" />
+                  <span>DOWNLOAD_ALL_M3U</span>
+                </button>
+
+                <button 
+                  onClick={() => setCategorySelection(null)}
+                  className="w-full py-3 text-[10px] uppercase font-black opacity-30 hover:opacity-100 transition-opacity"
+                >
+                  [ CANCEL_OPERATION ]
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
+        {selectedSeriesForDetail && (
+          <SeriesDetailModal 
+            series={selectedSeriesForDetail} 
+            xtream={xtream!} 
+            onClose={() => setSelectedSeriesForDetail(null)} 
+            addLog={addLog}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+}
+
+const MobileNavBtn = ({ active, icon, label, onClick, disabled }: { active: boolean, icon: any, label: string, onClick: () => void, disabled?: boolean }) => (
+  <button 
+    onClick={onClick}
+    disabled={disabled}
+    className={`flex flex-col items-center justify-center gap-1 transition-all flex-1 relative ${
+      disabled ? 'opacity-10' : (active ? 'text-[#00FF00]' : 'text-[#00FF00]/30')
+    }`}
+  >
+    {icon}
+    <span className="text-[8px] uppercase font-bold tracking-widest">{label}</span>
+    {active && <div className="absolute top-0 w-8 h-[1px] bg-[#00FF00] shadow-[0_0_5px_#00FF00]" />}
+  </button>
+);
+
+const Stat = ({ label, val }: { label: string, val: string }) => (
+  <div className="flex flex-col items-end">
+    <span className="text-[8px] opacity-30 font-bold uppercase tracking-widest">{label}</span>
+    <span className="text-[10px] font-black">{val}</span>
+  </div>
+);
+
+const TerminalBootLog = () => {
+  const [lines, setLines] = useState<string[]>([]);
+  const allLines = [
+    "> INITIALIZING_NEURAL_LINK...",
+    "> BYPASSING_FIREWALLS...",
+    "> HARVESTING_PACKETS...",
+    "> DECRYPTING_XTREAM_V3...",
+    "> CORTEX_SYSTEM_ONLINE.",
+    "> WAITING_FOR_AUTH_TOKEN..."
+  ];
+
+  useEffect(() => {
+    let current = 0;
+    const interval = setInterval(() => {
+      if (current < allLines.length) {
+        setLines(prev => [...prev, allLines[current]]);
+        current++;
+      } else {
+        clearInterval(interval);
+      }
+    }, 400);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="absolute top-4 left-4 font-mono text-[8px] text-[#00FF00]/40 space-y-1 pointer-events-none z-40 hidden lg:block">
+      {lines.map((line, i) => (
+        <motion.div 
+          key={i}
+          initial={{ opacity: 0, x: -10 }}
+          animate={{ opacity: 1, x: 0 }}
+        >
+          {line}
+        </motion.div>
+      ))}
+    </div>
+  );
+};
+
+const MatrixRain = () => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let width = (canvas.width = window.innerWidth);
+    let height = (canvas.height = window.innerHeight);
+
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()*&^%';
+    const fontSize = 14;
+    const columns = Math.floor(width / fontSize);
+    const drops: number[] = Array(columns).fill(1);
+
+    const draw = () => {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.05)';
+      ctx.fillRect(0, 0, width, height);
+      ctx.fillStyle = '#0F0';
+      ctx.font = fontSize + 'px monospace';
+
+      for (let i = 0; i < drops.length; i++) {
+        const text = letters.charAt(Math.floor(Math.random() * letters.length));
+        ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+        if (drops[i] * fontSize > height && Math.random() > 0.975) {
+          drops[i] = 0;
+        }
+        drops[i]++;
+      }
+    };
+
+    const interval = setInterval(draw, 33);
+    const handleResize = () => {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    };
+    window.addEventListener('resize', handleResize);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
+  return <canvas ref={canvasRef} className="fixed inset-0 z-0 opacity-20 pointer-events-none" />;
+};
+
+const SeriesDetailModal = ({ series, xtream, onClose, addLog }: { series: XtreamSeries & { localEpisodes?: any[] }, xtream: XtreamService | null, onClose: () => void, addLog: (m: string) => void }) => {
+  const [info, setInfo] = useState<any | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [activeSeason, setActiveSeason] = useState<string | null>(null);
+
+  useEffect(() => {
+    const fetchInfo = async () => {
+      if (series.localEpisodes) {
+        setInfo({
+          info: { ...series },
+          episodes: { "1": series.localEpisodes }
+        });
+        setActiveSeason("1");
+        setLoading(false);
+        return;
+      }
+      
+      if (!xtream) return;
+      
+      try {
+        const data = await xtream.getSeriesInfo(series.series_id);
+        setInfo(data);
+        const seasons = Object.keys(data.episodes);
+        if (seasons.length > 0) setActiveSeason(seasons[0]);
+      } catch (err) {
+        addLog('ERR: FETCH_SERIES_INFO_FAILED');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchInfo();
+  }, [series]);
+
+  const copyEpisode = (ep: any) => {
+    let link = "";
+    if (ep.raw_url) {
+      link = ep.raw_url;
+    } else if (xtream) {
+      link = xtream.generateM3ULink(ep.id, ep.container_extension, 'series');
+    }
+    
+    if (!link) return;
+    
+    const m3u = `#EXTM3U\r\n#EXTINF:-1 tvg-id="" tvg-name="${ep.title}" tvg-logo="${series.cover}" group-title="${series.name}",${ep.title}\r\n${link}\r\n`;
+    copyToClipboard(m3u);
+    addLog(`EPISODE_LINK_COPIED: ${ep.title.substring(0, 20)}...`);
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 lg:p-12 bg-black/90 backdrop-blur-xl"
+    >
+      <div className="w-full max-w-5xl h-full lg:h-auto lg:max-h-[85vh] bg-[#050505] border border-[#00FF00]/40 flex flex-col overflow-hidden shadow-[0_0_50px_rgba(0,255,0,0.1)]">
+        {/* Header */}
+        <div className="p-4 lg:p-6 border-b border-[#00FF00]/20 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <button onClick={onClose} className="p-2 hover:bg-[#00FF00]/10 text-[#00FF00]/60 hover:text-[#00FF00]">
+              <ChevronRight className="w-6 h-6 rotate-180" />
+            </button>
+            <h2 className="text-sm lg:text-xl font-black uppercase tracking-widest glow-text line-clamp-1">{series.name}</h2>
+          </div>
+          <button onClick={onClose} className="text-[10px] font-black uppercase opacity-40 hover:opacity-100 px-3 py-1 border border-white/20 hover:border-red-500 hover:text-red-500 transition-all">
+            Close_Link
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
+          {/* Cover & Info Sidebar */}
+          <div className="w-full lg:w-72 p-6 border-r border-[#00FF00]/10 flex flex-col gap-4 overflow-y-auto hidden lg:flex">
+            <img src={series.cover} className="w-full aspect-[2/3] object-cover hacker-border shadow-lg" referrerPolicy="no-referrer" />
+            <div className="space-y-4">
+              <div className="space-y-1">
+                <span className="text-[8px] uppercase opacity-40 font-black">GENRE</span>
+                <p className="text-[10px] font-bold uppercase">{series.genre || 'N/A'}</p>
+              </div>
+              <div className="space-y-1">
+                <span className="text-[8px] uppercase opacity-40 font-black">RATING</span>
+                <p className="text-[10px] font-bold text-yellow-500">{series.rating || 'N/A'}</p>
+              </div>
+              <div className="space-y-2">
+                <span className="text-[8px] uppercase opacity-40 font-black">STORY_PATH</span>
+                <p className="text-[10px] opacity-70 leading-relaxed text-justify h-32 overflow-y-auto custom-scrollbar pr-2">{series.plot}</p>
+              </div>
+              <button 
+                onClick={() => { copyToClipboard(series.cover); addLog(`POSTER_URL_COPIED: ${series.name.substring(0, 15)}...`); }}
+                className="w-full flex items-center justify-center gap-2 p-2 border border-[#00FF00]/20 hover:border-[#00FF00] hover:bg-[#00FF00]/5 transition-all"
+              >
+                <ImageIcon className="w-3 h-3" />
+                <span className="text-[8px] font-black uppercase tracking-tighter">Copy_Poster_URL</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Episode Browser */}
+          <div className="flex-1 flex flex-col overflow-hidden">
+            {loading ? (
+              <div className="flex-1 flex flex-col items-center justify-center gap-4">
+                <Loader2 className="w-12 h-12 animate-spin text-[#00FF00]" />
+                <span className="text-[10px] uppercase animate-pulse">DECRYPTING_EPISODES...</span>
+              </div>
+            ) : info && (
+               <>
+                 {/* Season Selector */}
+                 <div className="flex gap-2 p-4 overflow-x-auto custom-scrollbar border-b border-[#00FF00]/10 bg-black/40">
+                    {Object.keys(info.episodes).map(s => (
+                       <button 
+                         key={s}
+                         onClick={() => setActiveSeason(s)}
+                         className={`px-4 py-2 text-[10px] font-black uppercase border transition-all whitespace-nowrap ${activeSeason === s ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'border-white/10 hover:border-[#00FF00]/40'}`}
+                       >
+                         Season {s}
+                       </button>
+                    ))}
+                 </div>
+                 
+                 {/* Episode List */}
+                 <div className="flex-1 overflow-y-auto p-4 lg:p-6 custom-scrollbar">
+                    <div className="space-y-3">
+                      {activeSeason && info.episodes[activeSeason].map(ep => (
+                        <div 
+                          key={ep.id}
+                          className="flex items-center justify-between p-3 lg:p-4 bg-[#00FF00]/5 border border-[#00FF00]/10 hover:border-[#00FF00]/40 group transition-all"
+                        >
+                          <div className="flex items-center gap-4">
+                            <span className="text-xs font-black opacity-20 group-hover:opacity-100 transition-all">#{ep.episode_num}</span>
+                            <div className="flex flex-col">
+                              <span className="text-[10px] lg:text-xs font-bold uppercase tracking-wide group-hover:text-[#00FF00] transition-all">{ep.title}</span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[8px] opacity-40 uppercase">EXT: {ep.container_extension}</span>
+                                {ep.info?.duration && (
+                                  <>
+                                    <span className="text-[8px] opacity-20">|</span>
+                                    <span className="text-[8px] opacity-40 uppercase flex items-center gap-1">
+                                      <Clock className="w-2 h-2" /> {ep.info.duration}
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div className="flex items-center gap-2">
+                             <button 
+                               onClick={() => copyEpisode(ep)}
+                               className="px-4 py-2 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black border border-[#00FF00]/20 transition-all group/btn flex items-center gap-2"
+                               title="Copy Episode M3U"
+                             >
+                               <Copy className="w-3 h-3" />
+                               <span className="text-[8px] font-black uppercase">Copy_M3U</span>
+                             </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                 </div>
+               </>
+            )}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+};
+
+const SidebarBtn = ({ icon, label, active, onClick }: { icon: any, label: string, active: boolean, onClick: () => void }): React.ReactElement => (
+  <button 
+    onClick={onClick}
+    className={`flex items-center gap-4 px-6 py-4 border-l-2 transition-all relative group ${
+      active ? 'border-[#00FF00] bg-[#00FF00]/5 text-[#00FF00]' : 'border-transparent text-[#00FF00]/40 hover:text-[#00FF00]'
+    }`}
+  >
+    <div className={`transition-all duration-300 ${active ? 'scale-110 drop-shadow-[0_0_8px_rgba(0,255,0,0.5)]' : 'group-hover:scale-110'}`}>
+      {icon}
+    </div>
+    <span className="hidden lg:inline text-[11px] font-black uppercase tracking-widest">{label}</span>
+  </button>
+);
+
+const ContentCard = ({ item, type, xtream, addLog, categories, onOpenSeries, isM3UMode }: { item: XtreamStream | XtreamSeries, type: 'movie' | 'series', xtream: XtreamService | null, addLog: (m: string) => void, categories: XtreamCategory[], onOpenSeries?: (s: XtreamSeries) => void, isM3UMode?: boolean }): React.ReactElement => {
+  const [copied, setCopied] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [showRangeSelector, setShowRangeSelector] = useState(false);
+  const [availableEpisodes, setAvailableEpisodes] = useState<XtreamEpisode[]>([]);
+  const [startRange, setStartRange] = useState(1);
+  const [endRange, setEndRange] = useState(1);
+  
+  const name = item.name;
+  const movie = item as any;
+  const initialIcon = movie.stream_icon || movie.movie_image || movie.icon || movie.cover || (type === 'series' ? (item as XtreamSeries).cover : '');
+  const [icon, setIcon] = useState(initialIcon);
+  const id = 'stream_id' in item ? item.stream_id : item.series_id;
+  const extension = 'container_extension' in item ? item.container_extension : 'mp4';
+  const categoryName = categories.find(c => c.category_id === item.category_id)?.category_name || 'UNKNOWN_SECTOR';
+
+  const streamUrl = isM3UMode ? (item as any).direct_source : (xtream ? xtream.generateM3ULink(id, extension, type) : '');
+
+  const [episodeCount, setEpisodeCount] = useState<number | null>(null);
+  const [movieDuration, setMovieDuration] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIcon(initialIcon);
+  }, [initialIcon]);
+
+  const duration = useMemo(() => {
+    if (type === 'series') {
+      const series = item as any;
+      const count = episodeCount || series.total_episodes || series.episodes_count || series.episode_count || series.num_episodes || series.total_eps;
+      if (count) return `${count} EPISODES`;
+      return null;
+    }
+    
+    // Movie Runtime Logic
+    const movie = item as any;
+    const durRaw = movieDuration || movie.duration || movie.info?.duration || movie.duration_secs || movie.run_time || movie.runtime;
+    
+    if (!durRaw) return null;
+    
+    // Check if it's a number (seconds/minutes)
+    const num = Number(durRaw);
+    if (!isNaN(num) && num > 0) {
+      if (num > 500) { // Likely seconds
+        const h = Math.floor(num / 3600);
+        const m = Math.floor((num % 3600) / 60);
+        return h > 0 ? `${h}H ${m}M` : `${m}M`;
+      } else { // Likely minutes
+        const h = Math.floor(num / 60);
+        const m = num % 60;
+        return h > 0 ? `${h}H ${m}M` : `${m}M`;
+      }
+    }
+    
+    const strDur = String(durRaw).toUpperCase();
+    if (strDur === '0' || strDur === '00:00:00' || strDur === 'NULL') return null;
+    return strDur;
+  }, [item, type, episodeCount, movieDuration]);
+
+  useEffect(() => {
+    if (xtream && !isM3UMode) {
+      if (type === 'series' && !episodeCount) {
+        const series = item as any;
+        const existingCount = series.total_episodes || series.episodes_count || series.episode_count || series.num_episodes || series.total_eps;
+        if (!existingCount) {
+          xtream.getSeriesInfo((item as XtreamSeries).series_id).then(info => {
+            const count = Object.values(info.episodes).flat().length;
+            setEpisodeCount(count);
+          }).catch(() => {});
+        }
+      } else if (type === 'movie') {
+        const movieObj = item as any;
+        const needsDuration = !movieDuration && (!movieObj.duration || movieObj.duration === '0' || movieObj.duration === '00:00:00');
+        const needsIcon = !icon || icon === '';
+
+        if (needsDuration || needsIcon) {
+          const streamId = Number((item as XtreamStream).stream_id);
+          if (!isNaN(streamId)) {
+            xtream.getVodInfo(streamId).then(info => {
+              // Priority for icon
+              const fetchedIcon = info.movie_data?.movie_image || info.info?.movie_image || info.movie_data?.stream_icon || info.info?.stream_icon;
+              if (fetchedIcon && !icon) setIcon(fetchedIcon);
+
+              // Priority for duration
+              const fetchedDur = info.movie_data?.duration || info.info?.duration || info.duration;
+              if (fetchedDur && needsDuration) setMovieDuration(fetchedDur);
+            }).catch(() => {});
+          }
+        }
+      }
+    }
+  }, [type, item, xtream, isM3UMode, episodeCount, movieDuration, icon]);
+
+  const handleCopyPoster = () => {
+    if (icon) {
+      copyToClipboard(icon);
+      addLog(`POSTER_URL_COPIED: ${name.substring(0, 15)}...`);
+    }
+  };
+
+  const openM3UTextInTab = (m3uContent: string, title: string) => {
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <title>TERMINAL // M3U_EXTRACTOR // ${title}</title>
+        <style>
+          @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
+          
+          :root {
+            --neon: #00FF00;
+            --neon-dim: rgba(0, 255, 0, 0.2);
+            --bg: #050505;
+          }
+
+          body { 
+            background: var(--bg); 
+            color: var(--neon); 
+            font-family: 'JetBrains Mono', monospace; 
+            padding: 40px; 
+            font-size: 13px; 
+            line-height: 1.5; 
+            margin: 0; 
+            overflow-x: hidden;
+            background-image: 
+              radial-gradient(circle at 2px 2px, rgba(0, 255, 0, 0.05) 1px, transparent 0);
+            background-size: 40px 40px;
+          }
+
+          /* Matrix Rain Effect Simple */
+          canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            z-index: -1;
+            opacity: 0.15;
+          }
+
+          .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            position: relative;
+            z-index: 1;
+          }
+
+          .header { 
+            border-left: 4px solid var(--neon); 
+            padding-left: 20px; 
+            margin-bottom: 30px;
+            position: relative;
+            animation: slideIn 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+          }
+
+          @keyframes slideIn {
+            from { transform: translateX(-50px); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+          }
+
+          .meta { 
+            font-size: 10px; 
+            opacity: 0.5; 
+            letter-spacing: 3px; 
+            font-weight: 800; 
+            margin-bottom: 8px;
+            text-shadow: 0 0 5px var(--neon);
+          }
+
+          .title { 
+            font-weight: 800; 
+            letter-spacing: 1px; 
+            text-transform: uppercase; 
+            font-size: 24px;
+            margin: 0;
+          }
+
+          .toolbar {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 20px;
+            animation: fadeIn 1s ease 0.3s both;
+          }
+
+          @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+          }
+
+          .btn {
+            background: transparent;
+            border: 1px solid var(--neon);
+            color: var(--neon);
+            padding: 10px 20px;
+            font-family: inherit;
+            font-weight: 800;
+            font-size: 11px;
+            text-transform: uppercase;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            letter-spacing: 1px;
+            position: relative;
+            overflow: hidden;
+          }
+
+          .btn:hover {
+            background: var(--neon);
+            color: black;
+            box-shadow: 0 0 20px var(--neon-dim);
+          }
+
+          .btn:active {
+            transform: scale(0.95);
+          }
+
+          .btn.copy-btn {
+            background: var(--neon-dim);
+          }
+
+          .btn::after {
+            content: '';
+            position: absolute;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: linear-gradient(45deg, transparent, rgba(0,255,0,0.1), transparent);
+            transform: rotate(45deg);
+            transition: 0.5s;
+          }
+
+          .btn:hover::after {
+            left: 100%;
+          }
+
+          .code-wrapper {
+            position: relative;
+            animation: expandUp 0.6s cubic-bezier(0.23, 1, 0.32, 1) 0.1s both;
+          }
+
+          @keyframes expandUp {
+            from { transform: translateY(30px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+          }
+
+          pre { 
+            background: rgba(0, 10, 0, 0.8); 
+            padding: 30px; 
+            border: 1px solid rgba(0, 255, 0, 0.3); 
+            white-space: pre; 
+            overflow-x: auto; 
+            cursor: text;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            max-height: 70vh;
+            scrollbar-width: thin;
+            scrollbar-color: var(--neon) transparent;
+          }
+
+          pre::-webkit-scrollbar { width: 6px; height: 6px; }
+          pre::-webkit-scrollbar-thumb { background: var(--neon); }
+
+          .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: var(--neon);
+            color: black;
+            padding: 12px 25px;
+            font-weight: 800;
+            font-size: 12px;
+            transform: translateY(-100px);
+            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            z-index: 1000;
+            box-shadow: 0 0 30px var(--neon);
+          }
+
+          .toast.active { transform: translateY(0); }
+
+          .footer { 
+            margin-top: 30px; 
+            font-size: 9px; 
+            opacity: 0.3; 
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          }
+
+          .pulse {
+            width: 8px;
+            height: 8px;
+            background: var(--neon);
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 10px;
+            animation: pulse-glow 2s infinite;
+          }
+
+          @keyframes pulse-glow {
+            0% { box-shadow: 0 0 0 0px rgba(0, 255, 0, 0.7); }
+            100% { box-shadow: 0 0 0 10px rgba(0, 255, 0, 0); }
+          }
+        </style>
+      </head>
+      <body>
+        <canvas id="matrix"></canvas>
+        <div id="toast" class="toast">LINK_BATCH_COPIED_TO_CLIPBOARD</div>
+
+        <div class="container">
+          <div class="header">
+            <div class="meta">XTREAM_CORE // SYSTEM_DUMP // R-TYPE: M3U_PLAYLIST</div>
+            <h1 class="title">${title}</h1>
+          </div>
+
+          <div class="toolbar">
+            <button class="btn copy-btn" onclick="copyAll()">
+              <span class="pulse"></span>
+              COPY_ALL_DATA
+            </button>
+            <button class="btn" onclick="window.close()">
+              TERMINATE_SESSION
+            </button>
+          </div>
+
+          <div class="code-wrapper">
+            <pre id="m3u-content">${m3uContent}</pre>
+          </div>
+
+          <div class="footer">
+            <span>ENCRYPTED STREAM LINKS - AUTHENTICATION ATTACHED - (C) 2026 NEURAL COMMAND</span>
+            <span>OS_VERSION: 9.2.0-STABLE // BUILD: 0X8273F</span>
+          </div>
+        </div>
+
+        <script>
+          const canvas = document.getElementById('matrix');
+          const ctx = canvas.getContext('2d');
+
+          canvas.width = window.innerWidth;
+          canvas.height = window.innerHeight;
+
+          const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()*&^%';
+          const fontSize = 14;
+          const columns = canvas.width / fontSize;
+          const drops = Array(Math.floor(columns)).fill(1);
+
+          function draw() {
+            ctx.fillStyle = 'rgba(5, 5, 5, 0.05)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#0F0';
+            ctx.font = fontSize + 'px monospace';
+
+            for (let i = 0; i < drops.length; i++) {
+              const text = letters.charAt(Math.floor(Math.random() * letters.length));
+              ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+              if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
+                drops[i] = 0;
+              }
+              drops[i]++;
+            }
+          }
+
+          setInterval(draw, 33);
+
+          function copyAll() {
+            const content = document.getElementById('m3u-content').innerText;
+            navigator.clipboard.writeText(content).then(() => {
+              const toast = document.getElementById('toast');
+              toast.classList.add('active');
+              setTimeout(() => toast.classList.remove('active'), 2500);
+            });
+          }
+
+          window.onresize = () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+          };
+        </script>
+      </body>
+      </html>
+    `;
+    const blob = new Blob([html], { type: 'text/html' });
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank');
+  };
+
+  const handleViewM3U = async () => {
+    if (type === 'series' && !showRangeSelector) {
+      const series = item as any;
+      if (series.localEpisodes) {
+        // Raw M3U grouped mode
+        setAvailableEpisodes(series.localEpisodes);
+        setStartRange(1);
+        setEndRange(series.localEpisodes.length);
+        setShowRangeSelector(true);
+        return;
+      } else if (!isM3UMode && xtream) {
+        // Xtream Mode
+        addLog(`PREPARING_RANGE_SELECTOR: [${name}]...`);
+        try {
+          setExporting(true);
+          const info = await xtream.getSeriesInfo((item as XtreamSeries).series_id);
+          const allEpisodes = Object.values(info.episodes).flat().sort((a, b) => a.episode_num - b.episode_num);
+          setAvailableEpisodes(allEpisodes);
+          setStartRange(1);
+          setEndRange(allEpisodes.length);
+          setShowRangeSelector(true);
+        } catch (e) {
+          addLog(`ERR: EPISODE_FETCH_FAILED [${name}]`);
+        } finally {
+          setExporting(false);
+        }
+        return;
+      }
+    }
+
+    let m3u = "";
+    if (type === 'series' && !isM3UMode) {
+      m3u = `#EXTM3U\r\n#EXTINF:-1 tvg-id="" tvg-name="${name}" tvg-logo="${icon}" group-title="${categoryName}",${name}\r\n${streamUrl}\r\n`;
+    } else {
+      m3u = `#EXTM3U\r\n#EXTINF:-1 tvg-id="" tvg-name="${name}" tvg-logo="${icon}" group-title="${categoryName}",${name}\r\n${streamUrl}\r\n`;
+      addLog(`VIEW_INITIATED: ${name.substring(0, 15)}...`);
+    }
+
+    if (m3u) openM3UTextInTab(m3u, name);
+  };
+
+  const handleRangeExport = (mode: 'all' | 'range') => {
+    let episodesToExport = availableEpisodes;
+    if (mode === 'range') {
+      episodesToExport = availableEpisodes.filter(ep => ep.episode_num >= startRange && ep.episode_num <= endRange);
+    }
+    
+    let m3uContent = "";
+    if (isM3UMode) {
+      m3uContent = "#EXTM3U\r\n";
+      episodesToExport.forEach(ep => {
+        const url = (ep as any).raw_url || streamUrl;
+        m3uContent += `#EXTINF:-1 tvg-id="" tvg-name="${ep.title}" tvg-logo="${icon}" group-title="${name}",${ep.title}\r\n${url}\r\n`;
+      });
+    } else if (xtream) {
+      m3uContent = xtream.generateSeriesM3U(name, icon, episodesToExport);
+    }
+    
+    if (!m3uContent) return;
+    
+    addLog(`DUMP_COMPLETE: ${mode === 'all' ? 'ALL' : 'RANGE'} EXPORTED [${episodesToExport.length} EPs]`);
+    openM3UTextInTab(m3uContent, `${name} (${mode === 'all' ? 'ALL' : `EP ${startRange}-${endRange}`})`);
+    setShowRangeSelector(false);
+  };
+
+  const handleCopy = async () => {
+    if (type === 'series' && !isM3UMode) {
+      try {
+        setExporting(true);
+        addLog(`EXTRACTING EPISODES: ${name.substring(0, 15)}...`);
+        if (!xtream) return;
+        const info = await xtream.getSeriesInfo((item as XtreamSeries).series_id);
+        const allEpisodes = Object.values(info.episodes).flat();
+        const m3u = xtream.generateSeriesM3U(name, icon, allEpisodes);
+        copyToClipboard(m3u);
+        setCopied(true);
+        addLog(`DUMP_COMPLETE: ALL_EPISODES [${name}] COPIED.`);
+      } catch (e) {
+        addLog(`ERR: EXTRACTION_FAILED [${name}]`);
+      } finally {
+        setExporting(false);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } else {
+      copyToClipboard(streamUrl);
+      setCopied(true);
+      addLog(`PACKET_COPIED: ${name.substring(0, 15)}...`);
+      setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleDownload = async () => {
+    if (type === 'series' && !isM3UMode) {
+      try {
+        setExporting(true);
+        addLog(`EXTRACTING EPISODES: ${name.substring(0, 15)}...`);
+        if (!xtream) return;
+        const info = await xtream.getSeriesInfo((item as XtreamSeries).series_id);
+        const allEpisodes = Object.values(info.episodes).flat();
+        const m3u = xtream.generateSeriesM3U(name, icon, allEpisodes);
+        
+        const blob = new Blob([m3u], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${name.replace(/\s+/g, '_')}_all_episodes.m3u`;
+        a.click();
+        URL.revokeObjectURL(url);
+        addLog(`DUMP_COMPLETE: ALL_EPISODES [${name}] DOWNLOADED.`);
+      } catch (e) {
+        addLog(`ERR: EXTRACTION_FAILED [${name}]`);
+      } finally {
+        setExporting(false);
+      }
+    } else {
+      const m3u = `#EXTM3U\r\n#EXTINF:-1 tvg-id="" tvg-name="${name}" tvg-logo="${icon}" group-title="${categoryName}",${name}\r\n${streamUrl}\r\n`;
+      const blob = new Blob([m3u], { type: 'text/plain' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${name.replace(/[^\w\s]/gi, '').replace(/\s+/g, '_')}.m3u`;
+      a.click();
+      URL.revokeObjectURL(url);
+      addLog(`DUMP_INITIATED: ${name.substring(0, 15)}...`);
+    }
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="hacker-border bg-gray-900 aspect-[2/3] group relative overflow-hidden flex flex-col"
+    >
+      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all z-10" />
+      
+      {icon ? (
+        <img src={icon} alt={name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" referrerPolicy="no-referrer" />
+      ) : (
+        <div className="w-full h-full flex flex-col items-center justify-center opacity-20">
+          <Database className="w-12 h-12 mb-2" />
+          <span className="text-[8px] uppercase">NO_VISUAL_CORE</span>
+        </div>
+      )}
+
+      {/* Hover Overlay */}
+      <div className="absolute inset-x-0 bottom-0 p-3 translate-y-full group-hover:translate-y-0 transition-transform duration-300 z-20 bg-black/95 border-t border-[#00FF00]/40 backdrop-blur-md">
+        {showRangeSelector ? (
+          <div className="space-y-3 py-1">
+            <div className="flex items-center justify-between">
+              <span className="text-[10px] font-black italic glow-text">RANGE_SELECT</span>
+              <button onClick={() => setShowRangeSelector(false)} className="text-[#00FF00]/60 hover:text-[#00FF00]">
+                <Skull className="w-3 h-3 rotate-45" />
+              </button>
+            </div>
+            
+            <div className="grid grid-cols-2 gap-2">
+              <div className="space-y-1">
+                <label className="text-[6px] uppercase opacity-50 block">Start_EP</label>
+                <input 
+                  type="number" 
+                  value={startRange}
+                  onChange={(e) => setStartRange(Number(e.target.value))}
+                  className="w-full bg-black border border-[#00FF00]/30 text-[#00FF00] text-[10px] p-1 focus:border-[#00FF00] outline-none"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-[6px] uppercase opacity-50 block">End_EP</label>
+                <input 
+                  type="number" 
+                  value={endRange}
+                  onChange={(e) => setEndRange(Number(e.target.value))}
+                  className="w-full bg-black border border-[#00FF00]/30 text-[#00FF00] text-[10px] p-1 focus:border-[#00FF00] outline-none"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5 pt-1">
+              <button 
+                onClick={() => handleRangeExport('all')}
+                className="flex items-center justify-center gap-2 p-1.5 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black border border-[#00FF00]/20 transition-all font-black text-[8px]"
+              >
+                OPEN_ALL_EPISODES
+              </button>
+              <button 
+                onClick={() => handleRangeExport('range')}
+                className="flex items-center justify-center gap-2 p-1.5 bg-[#00FF00] text-black hover:bg-[#00FF00]/80 transition-all font-black text-[8px]"
+              >
+                EXTRACT_RANGE_EP_{startRange}-{endRange}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <h4 className="text-[10px] font-black uppercase line-clamp-2 mb-3 leading-tight tracking-tight">{name}</h4>
+            
+            <div className="grid grid-cols-2 gap-2">
+              {type === 'series' && !isM3UMode && (
+                <button 
+                  onClick={() => onOpenSeries?.(item as XtreamSeries)}
+                  className="col-span-2 flex items-center justify-center gap-2 p-2 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all mb-1 shadow-[0_0_10px_rgba(0,255,0,0.05)]"
+                >
+                  <Monitor className="w-3 h-3" />
+                  <span className="text-[8px] font-bold tracking-widest">OPEN_SERIES</span>
+                </button>
+              )}
+              <button 
+                onClick={handleCopy}
+                disabled={exporting}
+                className={`flex flex-col items-center justify-center gap-1 p-2 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all transition-duration-300 disabled:opacity-50 ${type === 'movie' ? 'col-span-2 py-4' : ''}`}
+              >
+                {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : (copied ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />)}
+                <span className="text-[8px] font-bold">{exporting ? 'SYNC...' : (copied ? 'COPIED' : 'COPY_LNK')}</span>
+              </button>
+              
+              {type === 'series' && (
+                <>
+                  <button 
+                    onClick={handleDownload}
+                    disabled={exporting}
+                    className="flex flex-col items-center justify-center gap-1 p-2 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all transition-duration-300 disabled:opacity-50"
+                  >
+                    {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                    <span className="text-[8px] font-bold">{exporting ? 'SYNC...' : 'DUMP_M3U'}</span>
+                  </button>
+                  <button 
+                    onClick={handleViewM3U}
+                    disabled={exporting}
+                    className="col-span-2 flex items-center justify-center gap-2 p-2 mt-1 border border-[#00FF00]/40 hover:bg-[#00FF00] hover:text-black transition-all disabled:opacity-50"
+                  >
+                    {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <ExternalLink className="w-3 h-3" />}
+                    <span className="text-[8px] font-black tracking-widest uppercase">EXTRACT_EPISODES</span>
+                  </button>
+                </>
+              )}
+
+              <button 
+                onClick={handleCopyPoster}
+                className="col-span-2 flex items-center justify-center gap-2 p-2 border border-dashed border-[#00FF00]/20 hover:border-[#00FF00] hover:bg-[#00FF00]/5 transition-all text-[7px]"
+              >
+                <ImageIcon className="w-2.5 h-2.5" />
+                <span className="font-black tracking-widest uppercase">Copy_Poster_URL</span>
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      
+      {/* Corner Badges */}
+      <div className="absolute top-2 left-2 z-20 flex flex-col gap-1 items-start">
+         <div className={`text-[7px] px-1 py-0.5 border ${type === 'movie' ? 'border-[#00FF00] text-[#00FF00]' : 'border-blue-400 text-blue-400'} font-black uppercase bg-black/80 flex items-center gap-1`}>
+           {type === 'movie' ? <Film className="w-2 h-2" /> : <Tv className="w-2 h-2" />}
+           {type}
+         </div>
+         <div className="text-[6px] px-1 py-0.5 border border-white/20 text-white/60 font-black uppercase bg-black/80 max-w-[80px] truncate shadow-sm">
+           {categoryName}
+         </div>
+         {duration && (
+           <div className="text-[6px] px-1 py-0.5 border border-[#00FF00]/40 text-[#00FF00] font-bold uppercase bg-black/95 flex items-center gap-1 shadow-[0_0_5px_rgba(0,255,0,0.2)]">
+             {type === 'series' ? <Layers className="w-2 h-2" /> : <Clock className="w-2 h-2" />}
+             {duration}
+           </div>
+         )}
+      </div>
+    </motion.div>
+  );
+};
