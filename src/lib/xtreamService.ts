@@ -44,7 +44,24 @@ export class XtreamService {
     if (!response.ok) {
       throw new Error(`XTREAM_API_ERROR: ${response.status}`);
     }
-    return response.json();
+    
+    const contentType = response.headers.get('content-type');
+    if (contentType && !contentType.includes('application/json')) {
+      const text = await response.text();
+      if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+        throw new Error('PROVIDER_RETURNED_HTML_INSTEAD_OF_JSON: The server might be blocking this request or redirecting to a login page.');
+      }
+    }
+
+    try {
+      return await response.json();
+    } catch (e) {
+      const text = await response.text();
+      if (text.includes('<!DOCTYPE')) {
+         throw new Error('CORRUPTED_PAYLOAD: Received HTML instead of data. Check server logs.');
+      }
+      throw e;
+    }
   }
 
   async testConnection(): Promise<any> {
