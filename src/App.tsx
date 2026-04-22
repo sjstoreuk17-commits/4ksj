@@ -131,37 +131,24 @@ export default function App() {
     setError(null);
     addLog('INITIATING M3U DATA PIPELINE...');
 
-    try {
-      // 1. Try Xtream Tunneling first (standard Xtream M3U links have creds in params)
-      try {
-        const urlObj = new URL(m3uUrl);
-        const username = urlObj.searchParams.get('username');
-        const password = urlObj.searchParams.get('password');
-        const serverUrl = `${urlObj.protocol}//${urlObj.host}`;
-
-        if (username && password) {
-          addLog('XTREAM_CREDENTIALS DETECTED. UPGRADING SESSION...');
-          const newAuth = { url: serverUrl, username, password };
-          setAuth(newAuth);
-          await handleLogin(newAuth);
-          return;
-        }
-      } catch (urlErr) {
-        // Not a standard URL or parsing failed, fallback to raw fetch
-      }
-
-      // 2. Raw M3U Fallback (Standard M3U files)
-      addLog('RAW_M3U DETECTED. ANALYZING DATA STRUCTURE...');
+    const fetchRawM3U = async () => {
+      addLog('FETCHING RAW M3U DATA...');
       const response = await fetch(`/api/proxy?url=${encodeURIComponent(m3uUrl)}`);
-      if (!response.ok) throw new Error('FAILED TO FETCH M3U DATA');
+      if (!response.ok) throw new Error(`PROXY_FETCH_FAILED: ${response.status}`);
       
       const content = await response.text();
+      if (!content || !content.includes('#EXTM3U')) {
+        throw new Error('INVALID_M3U_FORMAT: Payload does not contain #EXTM3U header');
+      }
+
       const playlist = parseM3U(content);
-      
       setM3uPlaylist(playlist);
       setIsM3UMode(true);
       setCurrentView('home');
       
+      addLog(`M3U_EXTRACT_SUCCESS: ${playlist.entries.length} ITEMS FOUND.`);
+      
+      // Setup UI collections from M3U
       const movieCats: XtreamCategory[] = playlist.categories
         .filter(c => playlist.entries.some(e => e.group === c && e.type === 'movie'))
         .map(c => ({ category_id: c, category_name: c, parent_id: 0 }));
@@ -188,50 +175,69 @@ export default function App() {
         }));
       setCurrentStreams(movies);
 
-      // Map & GROUP Series for M3U to enable EXTRACT_EPISODES for raw playlists
       const seriesEntries = playlist.entries.filter(e => e.type === 'series');
       const seriesMap = new Map<string, XtreamSeries & { localEpisodes?: XtreamEpisode[] }>();
 
       seriesEntries.forEach(e => {
-        // Group by base name to treat individual M3U lines as one series
         const baseName = e.name.replace(/\s*[sS]\d+\s*[eE]\d+.*$|\s*[sS]eason\s*\d+\s*[eE]pisode\s*\d+.*$/i, '').trim() || e.name;
-        
         if (!seriesMap.has(baseName)) {
           seriesMap.set(baseName, {
-            num: 0,
-            name: baseName,
-            series_id: Math.floor(Math.random() * 1000000),
-            cover: e.logo || '',
-            plot: 'M3U_SYNTHETIC_GROUP',
-            cast: '', director: '', genre: e.group, releaseDate: '', last_modified: '', rating: '', rating_5_0: 0,
-            backdrop_path: [], youtube_trailer: '', episode_run_time: '',
-            category_id: e.group,
-            localEpisodes: []
+            num: 0, name: baseName, series_id: Math.floor(Math.random() * 1000000),
+            cover: e.logo || '', plot: 'M3U_EXTRACTED', cast: '', director: '', genre: e.group, releaseDate: '',
+            last_modified: '', rating: '', rating_5_0: 0, backdrop_path: [], youtube_trailer: '', 
+            episode_run_time: '', category_id: e.group, localEpisodes: []
           });
         }
-        
         const series = seriesMap.get(baseName)!;
         const epMatch = e.name.match(/[eE](\d+)/);
         const epNum = epMatch ? parseInt(epMatch[1]) : series.localEpisodes!.length + 1;
-        
         series.localEpisodes!.push({
-          id: e.id,
-          episode_num: epNum,
-          season: 1,
-          title: e.name,
-          container_extension: 'ts',
+          id: e.id, episode_num: epNum, season: 1, title: e.name, container_extension: 'ts',
           info: { duration: '', movie_image: e.logo || '', plot: '', rating: '', release_date: '' },
-          raw_url: e.url // Custom field for M3U direct playback
+          raw_url: e.url
         } as any);
       });
 
       setCurrentSeries(Array.from(seriesMap.values()));
-      addLog(`M3U_PIPELINE_COMPLETE: ${playlist.entries.length} ITEMS EXTRACTED.`);
+      setIsLoggedIn(true);
       setLoading(false);
+    };
+
+    try {
+      // 1. Check for credentials in URL
+      try {
+        const urlObj = new URL(m3uUrl);
+        const username = urlObj.searchParams.get('username');
+        const password = urlObj.searchParams.get('password');
+        const serverUrl = `${urlObj.protocol}//${urlObj.host}`;
+
+        if (username && password) {
+          addLog('XTREAM_CREDENTIALS DETECTED. ATTEMPTING HANDSHAKE...');
+          const newAuth = { url: serverUrl, username, password };
+          setAuth(newAuth);
+          
+          try {
+            const service = new XtreamService(newAuth, exportAuth);
+            await service.testConnection();
+            addLog('API_HANDSHAKE_SUCCESS. SYNCHRONIZING...');
+            await handleLogin(newAuth);
+            return;
+          } catch (apiErr) {
+            addLog('XTREAM_API_UNREACHABLE. FALLING BACK TO RAW_M3U...');
+            await fetchRawM3U();
+            return;
+          }
+        }
+      } catch (urlErr) {
+        // Not a standard Xtream URL, continue to raw fetch
+      }
+
+      // 2. Direct M3U Fetch
+      await fetchRawM3U();
 
     } catch (err: any) {
       setError(`Login failed: ${err.message}`);
-      addLog(`ERR: M3U_TUNNEL_FAILURE - ${err.message}`);
+      addLog(`ERR: TUNNEL_FAILURE - ${err.message}`);
       setLoading(false);
     }
   };
@@ -259,9 +265,10 @@ export default function App() {
 
     try {
       const service = new XtreamService(targetAuth, exportAuth);
+      addLog(`HANDSHAKE: [${targetAuth.url}]`);
       await service.testConnection();
       
-      addLog('ACCESS GRANTED. FETCHING SCHEMAS...');
+      addLog('ACCESS_GRANTED. RETRIEVING CATEGORIES...');
       const [vCats, sCats] = await Promise.all([
         service.getVodCategories(),
         service.getSeriesCategories()
@@ -270,7 +277,7 @@ export default function App() {
       setVodCats(vCats);
       setSeriesCats(sCats);
       
-      addLog('FETCHING ENTIRE CONTENT DATABASE...');
+      addLog(`DB_SYNC: [VOD: ${vCats.length}L | SERIES: ${sCats.length}L]`);
       const [streams, series] = await Promise.all([
         service.getVodStreams(),
         service.getSeries()
@@ -282,11 +289,20 @@ export default function App() {
       setIsLoggedIn(true);
       setIsM3UMode(false);
       
-      addLog('CONNECTION SECURE. CORE DATA SYNCED.');
+      addLog('MAINFRAME_SYNC COMPLETE. SESSION_ESTABLISHED.');
       setLoading(false);
     } catch (err: any) {
-      addLog(`ERR: CONNECTION_REJECTED - ${err.message}`);
-      setError('Invalid credentials or Server Unreachable');
+      const errorMsg = err.message || 'Unknown network error';
+      addLog(`ERR: CONNECTION_REJECTED - ${errorMsg}`);
+      
+      if (errorMsg.includes('403')) {
+        setError('SERVER_BLOCK: Your IP or this server origin is restricted by the provider.');
+        addLog('HINT: Provider might be blocking Vercel/Cloud IPs.');
+      } else if (errorMsg.includes('404')) {
+        setError('SERVER_NOT_FOUND: The URL provided does not host an Xtream API.');
+      } else {
+        setError(`ACCESS_DENIED: ${errorMsg}`);
+      }
       setLoading(false);
     }
   }, [auth, exportAuth, addLog]);
