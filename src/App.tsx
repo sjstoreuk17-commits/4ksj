@@ -57,6 +57,7 @@ import { XtreamService } from './lib/xtreamService';
 import { XtreamAuth, XtreamCategory, XtreamStream, XtreamSeries, XtreamSeriesInfo, XtreamEpisode, M3UEntry, M3UPlaylist } from './types';
 import { copyToClipboard, parseM3U } from './lib/m3uParser';
 import { fetchApiData } from './services/proxyEngine';
+import { MergerService, MergedSeriesItem } from './services/mergerService';
 import { auth as fbAuth, db } from './lib/firebase';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, addDoc, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
@@ -89,7 +90,6 @@ export default function App() {
   };
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(false);
   const [loading, setLoading] = useState(false);
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
   const [customKeyName, setCustomKeyName] = useState('');
@@ -114,6 +114,11 @@ export default function App() {
   // M3U Data Mode State
   const [isM3UMode, setIsM3UMode] = useState(false);
   const [m3uPlaylist, setM3uPlaylist] = useState<M3UPlaylist | null>(null);
+
+  // Multi-Series Merger State
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedSeries, setSelectedSeries] = useState<Map<number, XtreamSeries>>(new Map());
+  const [showMergerModal, setShowMergerModal] = useState(false);
 
   // Persistence Tracker State
   const [trackerActive, setTrackerActive] = useState(false);
@@ -395,11 +400,17 @@ export default function App() {
     }
   }, [auth, exportAuth, addLog]);
 
-  useEffect(() => {
-    if (!isLoggedIn && isInitializing) {
-      handleLogin();
-    }
-  }, [isLoggedIn, isInitializing, handleLogin]);
+  const toggleSelection = (s: XtreamSeries) => {
+    setSelectedSeries(prev => {
+      const next = new Map(prev);
+      if (next.has(s.series_id)) {
+        next.delete(s.series_id);
+      } else {
+        next.set(s.series_id, s);
+      }
+      return next;
+    });
+  };
 
   // Sync Firebase Tracker
   useEffect(() => {
@@ -574,21 +585,6 @@ export default function App() {
     { category_id: 'recently_added', category_name: '★ RECENTLY ADDED 50' },
     ...seriesCats
   ], [seriesCats, newArrivals]);
-
-  if (isInitializing) {
-    return (
-      <div className="min-h-screen bg-[#050505] text-[#00FF00] font-mono flex flex-col items-center justify-center p-4">
-        <Skull className="w-16 h-16 mb-6 animate-bounce" />
-        <div className="space-y-4 text-center">
-          <h1 className="text-3xl font-black tracking-[0.3em] glow-text uppercase">NEURAL-SHIELD</h1>
-          <div className="flex items-center justify-center gap-3 text-xs opacity-60">
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span className="uppercase tracking-[0.2em]">Authenticating Hardware IDs...</span>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (!isLoggedIn) {
     return (
@@ -1263,6 +1259,25 @@ export default function App() {
                             </div>
                             
                             <div className="flex items-center gap-3 lg:gap-4">
+                               {currentView === 'series' && selectedCategory && (
+                                  <button 
+                                    onClick={() => {
+                                      setSelectionMode(!selectionMode);
+                                      if (selectionMode) setSelectedSeries(new Map());
+                                    }}
+                                    className={`btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 ${selectionMode ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'opacity-60'}`}
+                                  >
+                                    <Layers className="w-3 h-3" /> {selectionMode ? 'CANCEL_SELECTION' : 'MULTI_SELECT'}
+                                  </button>
+                               )}
+                               {selectionMode && selectedSeries.size > 0 && (
+                                 <button 
+                                   onClick={() => setShowMergerModal(true)}
+                                   className="btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 bg-blue-500 text-white border-blue-400 hover:bg-blue-600 animate-pulse transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)]"
+                                 >
+                                   <Zap className="w-3 h-3" /> MERGE_{selectedSeries.size}_SERIES
+                                 </button>
+                               )}
                                <div className="relative flex-1 hacker-border px-3 py-1 bg-black/40 flex items-center gap-2">
                                  <Search className="w-3 h-3 opacity-40" />
                                  <input 
@@ -1295,6 +1310,9 @@ export default function App() {
                                     categories={currentView === 'movies' ? vodCats : seriesCats}
                                     onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
                                     isM3UMode={isM3UMode}
+                                    isSelectionMode={selectionMode}
+                                    isSelected={selectedSeries.has((item as any).series_id)}
+                                    onToggleSelection={() => toggleSelection(item as XtreamSeries)}
                                   />
                                 </React.Fragment>
                               ))
@@ -1422,6 +1440,21 @@ export default function App() {
           />
         )}
       </AnimatePresence>
+      <AnimatePresence>
+        {showMergerModal && (
+          <MultiSeriesMergerModal 
+            selectedSeries={Array.from(selectedSeries.values())}
+            xtream={xtream!}
+            onClose={() => setShowMergerModal(false)}
+            addLog={addLog}
+            onComplete={() => {
+              setShowMergerModal(false);
+              setSelectionMode(false);
+              setSelectedSeries(new Map());
+            }}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -1533,6 +1566,404 @@ const MatrixRain = () => {
   }, []);
 
   return <canvas ref={canvasRef} className="fixed inset-0 z-0 opacity-20 pointer-events-none" />;
+};
+
+const openM3UTextInTab = (m3uContent: string, title: string) => {
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>TERMINAL // M3U_EXTRACTOR // ${title}</title>
+      <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
+        
+        :root {
+          --neon: #00FF00;
+          --neon-dim: rgba(0, 255, 0, 0.2);
+          --bg: #050505;
+        }
+
+        body { 
+          background: var(--bg); 
+          color: var(--neon); 
+          font-family: 'JetBrains Mono', monospace; 
+          padding: 40px; 
+          font-size: 13px; 
+          line-height: 1.5; 
+          margin: 0; 
+          overflow-x: hidden;
+          background-image: 
+            radial-gradient(circle at 2px 2px, rgba(0, 255, 0, 0.05) 1px, transparent 0);
+          background-size: 40px 40px;
+        }
+
+        /* Matrix Rain Effect Simple */
+        canvas {
+          position: fixed;
+          top: 0;
+          left: 0;
+          z-index: -1;
+          opacity: 0.15;
+        }
+
+        .container {
+          max-width: 1200px;
+          margin: 0 auto;
+          position: relative;
+          z-index: 1;
+        }
+
+        .header { 
+          border-left: 4px solid var(--neon); 
+          padding-left: 20px; 
+          margin-bottom: 30px;
+          position: relative;
+          animation: slideIn 0.5s cubic-bezier(0.23, 1, 0.32, 1);
+        }
+
+        @keyframes slideIn {
+          from { transform: translateX(-50px); opacity: 0; }
+          to { transform: translateX(0); opacity: 1; }
+        }
+
+        .meta { 
+          font-size: 10px; 
+          opacity: 0.5; 
+          letter-spacing: 3px; 
+          font-weight: 800; 
+          margin-bottom: 8px;
+          text-shadow: 0 0 5px var(--neon);
+        }
+
+        .title { 
+          font-weight: 800; 
+          letter-spacing: 1px; 
+          text-transform: uppercase; 
+          font-size: 24px;
+          margin: 0;
+        }
+
+        .toolbar {
+          display: flex;
+          gap: 15px;
+          margin-bottom: 20px;
+          animation: fadeIn 1s ease 0.3s both;
+        }
+
+        @keyframes fadeIn {
+          from { opacity: 0; }
+          to { opacity: 1; }
+        }
+
+        .btn {
+          background: transparent;
+          border: 1px solid var(--neon);
+          color: var(--neon);
+          padding: 10px 20px;
+          font-family: inherit;
+          font-weight: 800;
+          font-size: 11px;
+          text-transform: uppercase;
+          cursor: pointer;
+          transition: all 0.2s;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          letter-spacing: 1px;
+          position: relative;
+          overflow: hidden;
+        }
+
+        .btn:hover {
+          background: var(--neon);
+          color: black;
+          box-shadow: 0 0 20px var(--neon-dim);
+        }
+
+        .btn:active {
+          transform: scale(0.95);
+        }
+
+        .btn.copy-btn {
+          background: var(--neon-dim);
+        }
+
+        .btn::after {
+          content: '';
+          position: absolute;
+          top: -50%;
+          left: -50%;
+          width: 200%;
+          height: 200%;
+          background: linear-gradient(45deg, transparent, rgba(0,255,0,0.1), transparent);
+          transform: rotate(45deg);
+          transition: 0.5s;
+        }
+
+        .btn:hover::after {
+          left: 100%;
+        }
+
+        .code-wrapper {
+          position: relative;
+          animation: expandUp 0.6s cubic-bezier(0.23, 1, 0.32, 1) 0.1s both;
+        }
+
+        @keyframes expandUp {
+          from { transform: translateY(30px); opacity: 0; }
+          to { transform: translateY(0); opacity: 1; }
+        }
+
+        pre { 
+          background: rgba(0, 10, 0, 0.8); 
+          padding: 30px; 
+          border: 1px solid rgba(0, 255, 0, 0.3); 
+          white-space: pre; 
+          overflow-x: auto; 
+          cursor: text;
+          box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+          max-height: 70vh;
+          scrollbar-width: thin;
+          scrollbar-color: var(--neon) transparent;
+        }
+
+        pre::-webkit-scrollbar { width: 6px; height: 6px; }
+        pre::-webkit-scrollbar-thumb { background: var(--neon); }
+
+        .toast {
+          position: fixed;
+          top: 20px;
+          right: 20px;
+          background: var(--neon);
+          color: black;
+          padding: 12px 25px;
+          font-weight: 800;
+          font-size: 12px;
+          transform: translateY(-100px);
+          transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+          z-index: 1000;
+          box-shadow: 0 0 30px var(--neon);
+        }
+
+        .toast.active { transform: translateY(0); }
+
+        .footer { 
+          margin-top: 30px; 
+          font-size: 9px; 
+          opacity: 0.3; 
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+
+        .pulse {
+          width: 8px;
+          height: 8px;
+          background: var(--neon);
+          border-radius: 50%;
+          display: inline-block;
+          margin-right: 10px;
+          animation: pulse-glow 2s infinite;
+        }
+
+        @keyframes pulse-glow {
+          0% { box-shadow: 0 0 0 0px rgba(0, 255, 0, 0.7); }
+          100% { box-shadow: 0 0 0 10px rgba(0, 255, 0, 0); }
+        }
+      </style>
+    </head>
+    <body>
+      <canvas id="matrix"></canvas>
+      <div id="toast" class="toast">LINK_BATCH_COPIED_TO_CLIPBOARD</div>
+
+      <div class="container">
+        <div class="header">
+          <div class="meta">XTREAM_CORE // SYSTEM_DUMP // R-TYPE: M3U_PLAYLIST</div>
+          <h1 class="title">${title}</h1>
+        </div>
+
+        <div class="toolbar">
+          <button class="btn copy-btn" onclick="copyAll()">
+            <span class="pulse"></span>
+            COPY_ALL_DATA
+          </button>
+          <button class="btn" onclick="window.close()">
+            TERMINATE_SESSION
+          </button>
+        </div>
+
+        <div class="code-wrapper">
+          <pre id="m3u-content">${m3uContent}</pre>
+        </div>
+
+        <div class="footer">
+          <span>ENCRYPTED STREAM LINKS - AUTHENTICATION ATTACHED - (C) 2026 NEURAL COMMAND</span>
+          <span>OS_VERSION: 9.2.0-STABLE // BUILD: 0X8273F</span>
+        </div>
+      </div>
+
+      <script>
+        const canvas = document.getElementById('matrix');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+
+        const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()*&^%';
+        const fontSize = 14;
+        const columns = canvas.width / fontSize;
+        const drops = Array(Math.floor(columns)).fill(1);
+
+        function draw() {
+          ctx.fillStyle = 'rgba(5, 5, 5, 0.05)';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.fillStyle = '#0F0';
+          ctx.font = fontSize + 'px monospace';
+
+          for (let i = 0; i < drops.length; i++) {
+            const text = letters.charAt(Math.floor(Math.random() * letters.length));
+            ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+            if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
+              drops[i] = 0;
+            }
+            drops[i]++;
+          }
+        }
+
+        setInterval(draw, 33);
+
+        function copyAll() {
+          const content = document.getElementById('m3u-content').innerText;
+          navigator.clipboard.writeText(content).then(() => {
+            const toast = document.getElementById('toast');
+            toast.classList.add('active');
+            setTimeout(() => toast.classList.remove('active'), 2500);
+          });
+        }
+
+        window.onresize = () => {
+          canvas.width = window.innerWidth;
+          canvas.height = window.innerHeight;
+        };
+      </script>
+    </body>
+    </html>
+  `;
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
+};
+
+const MultiSeriesMergerModal = ({ 
+  selectedSeries, 
+  xtream, 
+  onClose, 
+  addLog, 
+  onComplete 
+}: { 
+  selectedSeries: XtreamSeries[], 
+  xtream: XtreamService, 
+  onClose: () => void, 
+  addLog: (m: string) => void,
+  onComplete: () => void
+}) => {
+  const [isProcessing, setIsProcessing] = React.useState(false);
+
+  const handleExport = async (mode: 'download' | 'text') => {
+    setIsProcessing(true);
+    addLog(`INITIATING_BULK_EXPORT: PROCESSING ${selectedSeries.length} SERIES...`);
+
+    try {
+      const merger = new MergerService(xtream);
+      const items: MergedSeriesItem[] = selectedSeries.map(s => ({
+        series: s,
+        language: ""
+      }));
+
+      // Use a fixed identifier to trigger individual naming in the merger service
+      const m3u = await merger.generateMergedM3U("Bulk_Export", items, addLog);
+      
+      if (mode === 'download') {
+        const blob = new Blob([m3u], { type: 'text/plain' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        // Always use the first selected series name for the filename
+        const fileName = selectedSeries[0].name.replace(/\s+/g, '_');
+        a.download = `${fileName}.m3u`;
+        a.click();
+        URL.revokeObjectURL(url);
+        addLog(`EXPORT_COMPLETE: DOWNLOADED AS [${fileName}.m3u].`);
+      } else {
+        openM3UTextInTab(m3u, `${selectedSeries[0].name} + ${selectedSeries.length - 1} OTHER SERIES`);
+        addLog(`EXPORT_COMPLETE: OPENED TERMINAL VIEW.`);
+      }
+      
+      onComplete();
+    } catch (err) {
+      addLog("ERR: BULK_EXPORT_FAILED");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <motion.div 
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[200] flex items-center justify-center p-4 bg-black/95 backdrop-blur-md"
+    >
+      <div className="w-full max-w-2xl hacker-border bg-[#050505] p-6 lg:p-10 space-y-8 overflow-y-auto max-h-[90vh]">
+        <div className="space-y-2 border-b border-[#00FF00]/20 pb-6 text-center">
+          <h2 className="text-xl font-black uppercase text-[#00FF00] glow-text flex items-center justify-center gap-3 text-2xl">
+             <Zap className="w-8 h-8" /> BULK_SERIES_MACHINE
+          </h2>
+          <p className="text-[10px] opacity-40 uppercase font-black tracking-[0.3em] mt-2">Selected Matrix: {selectedSeries.length} Components</p>
+        </div>
+
+        <div className="space-y-8">
+           <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
+             {selectedSeries.map(s => (
+               <div key={s.series_id} className="aspect-square hacker-border overflow-hidden relative group">
+                 <img src={s.cover} className="w-full h-full object-cover opacity-80" referrerPolicy="no-referrer" />
+                 <div className="absolute inset-0 bg-[#00FF00]/10" />
+               </div>
+             ))}
+           </div>
+        </div>
+
+        <div className="flex flex-col gap-6 pt-6">
+           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+             <button 
+                onClick={() => handleExport('download')}
+                disabled={isProcessing}
+                className="btn-hacker py-6 flex items-center justify-center gap-3 bg-blue-600 text-white border-blue-400 group transition-all hover:scale-[1.02]"
+             >
+               {isProcessing ? <Loader2 className="w-6 h-6 animate-spin" /> : <Download className="w-6 h-6 group-hover:scale-125 transition-transform" />}
+               <span className="font-black text-sm">DOWNLOAD_M3U_FILE</span>
+             </button>
+
+             <button 
+                onClick={() => handleExport('text')}
+                disabled={isProcessing}
+                className="btn-hacker py-6 flex items-center justify-center gap-3 bg-[#00FF00] text-black border-[#00FF00] group transition-all hover:scale-[1.02]"
+             >
+               {isProcessing ? <Loader2 className="w-6 h-6 animate-spin" /> : <ExternalLink className="w-6 h-6 group-hover:scale-125 transition-transform" />}
+               <span className="font-black text-sm">OPEN_M3U_TEXT</span>
+             </button>
+           </div>
+
+           <button 
+             onClick={onClose}
+             className="w-full py-4 text-[12px] uppercase font-black opacity-30 hover:opacity-100 transition-opacity tracking-[0.5em]"
+           >
+             [ ABORT_OPERATION ]
+           </button>
+        </div>
+      </div>
+    </motion.div>
+  );
 };
 
 const SeriesDetailModal = ({ series, xtream, onClose, addLog }: { series: XtreamSeries & { localEpisodes?: any[] }, xtream: XtreamService | null, onClose: () => void, addLog: (m: string) => void }) => {
@@ -1716,7 +2147,29 @@ const SidebarBtn = ({ icon, label, active, onClick }: { icon: any, label: string
   </button>
 );
 
-const ContentCard = ({ item, type, xtream, addLog, categories, onOpenSeries, isM3UMode }: { item: XtreamStream | XtreamSeries, type: 'movie' | 'series', xtream: XtreamService | null, addLog: (m: string) => void, categories: XtreamCategory[], onOpenSeries?: (s: XtreamSeries) => void, isM3UMode?: boolean }): React.ReactElement => {
+const ContentCard = ({ 
+  item, 
+  type, 
+  xtream, 
+  addLog, 
+  categories, 
+  onOpenSeries, 
+  isM3UMode,
+  isSelectionMode,
+  isSelected,
+  onToggleSelection
+}: { 
+  item: XtreamStream | XtreamSeries, 
+  type: 'movie' | 'series', 
+  xtream: XtreamService | null, 
+  addLog: (m: string) => void, 
+  categories: XtreamCategory[], 
+  onOpenSeries?: (s: XtreamSeries) => void,
+  isM3UMode?: boolean,
+  isSelectionMode?: boolean,
+  isSelected?: boolean,
+  onToggleSelection?: () => void
+}): React.ReactElement => {
   const [copied, setCopied] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showRangeSelector, setShowRangeSelector] = useState(false);
@@ -1813,292 +2266,6 @@ const ContentCard = ({ item, type, xtream, addLog, categories, onOpenSeries, isM
       copyToClipboard(icon);
       addLog(`POSTER_URL_COPIED: ${name.substring(0, 15)}...`);
     }
-  };
-
-  const openM3UTextInTab = (m3uContent: string, title: string) => {
-    const html = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>TERMINAL // M3U_EXTRACTOR // ${title}</title>
-        <style>
-          @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700;800&display=swap');
-          
-          :root {
-            --neon: #00FF00;
-            --neon-dim: rgba(0, 255, 0, 0.2);
-            --bg: #050505;
-          }
-
-          body { 
-            background: var(--bg); 
-            color: var(--neon); 
-            font-family: 'JetBrains Mono', monospace; 
-            padding: 40px; 
-            font-size: 13px; 
-            line-height: 1.5; 
-            margin: 0; 
-            overflow-x: hidden;
-            background-image: 
-              radial-gradient(circle at 2px 2px, rgba(0, 255, 0, 0.05) 1px, transparent 0);
-            background-size: 40px 40px;
-          }
-
-          /* Matrix Rain Effect Simple */
-          canvas {
-            position: fixed;
-            top: 0;
-            left: 0;
-            z-index: -1;
-            opacity: 0.15;
-          }
-
-          .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            position: relative;
-            z-index: 1;
-          }
-
-          .header { 
-            border-left: 4px solid var(--neon); 
-            padding-left: 20px; 
-            margin-bottom: 30px;
-            position: relative;
-            animation: slideIn 0.5s cubic-bezier(0.23, 1, 0.32, 1);
-          }
-
-          @keyframes slideIn {
-            from { transform: translateX(-50px); opacity: 0; }
-            to { transform: translateX(0); opacity: 1; }
-          }
-
-          .meta { 
-            font-size: 10px; 
-            opacity: 0.5; 
-            letter-spacing: 3px; 
-            font-weight: 800; 
-            margin-bottom: 8px;
-            text-shadow: 0 0 5px var(--neon);
-          }
-
-          .title { 
-            font-weight: 800; 
-            letter-spacing: 1px; 
-            text-transform: uppercase; 
-            font-size: 24px;
-            margin: 0;
-          }
-
-          .toolbar {
-            display: flex;
-            gap: 15px;
-            margin-bottom: 20px;
-            animation: fadeIn 1s ease 0.3s both;
-          }
-
-          @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-          }
-
-          .btn {
-            background: transparent;
-            border: 1px solid var(--neon);
-            color: var(--neon);
-            padding: 10px 20px;
-            font-family: inherit;
-            font-weight: 800;
-            font-size: 11px;
-            text-transform: uppercase;
-            cursor: pointer;
-            transition: all 0.2s;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            letter-spacing: 1px;
-            position: relative;
-            overflow: hidden;
-          }
-
-          .btn:hover {
-            background: var(--neon);
-            color: black;
-            box-shadow: 0 0 20px var(--neon-dim);
-          }
-
-          .btn:active {
-            transform: scale(0.95);
-          }
-
-          .btn.copy-btn {
-            background: var(--neon-dim);
-          }
-
-          .btn::after {
-            content: '';
-            position: absolute;
-            top: -50%;
-            left: -50%;
-            width: 200%;
-            height: 200%;
-            background: linear-gradient(45deg, transparent, rgba(0,255,0,0.1), transparent);
-            transform: rotate(45deg);
-            transition: 0.5s;
-          }
-
-          .btn:hover::after {
-            left: 100%;
-          }
-
-          .code-wrapper {
-            position: relative;
-            animation: expandUp 0.6s cubic-bezier(0.23, 1, 0.32, 1) 0.1s both;
-          }
-
-          @keyframes expandUp {
-            from { transform: translateY(30px); opacity: 0; }
-            to { transform: translateY(0); opacity: 1; }
-          }
-
-          pre { 
-            background: rgba(0, 10, 0, 0.8); 
-            padding: 30px; 
-            border: 1px solid rgba(0, 255, 0, 0.3); 
-            white-space: pre; 
-            overflow-x: auto; 
-            cursor: text;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-            max-height: 70vh;
-            scrollbar-width: thin;
-            scrollbar-color: var(--neon) transparent;
-          }
-
-          pre::-webkit-scrollbar { width: 6px; height: 6px; }
-          pre::-webkit-scrollbar-thumb { background: var(--neon); }
-
-          .toast {
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background: var(--neon);
-            color: black;
-            padding: 12px 25px;
-            font-weight: 800;
-            font-size: 12px;
-            transform: translateY(-100px);
-            transition: transform 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-            z-index: 1000;
-            box-shadow: 0 0 30px var(--neon);
-          }
-
-          .toast.active { transform: translateY(0); }
-
-          .footer { 
-            margin-top: 30px; 
-            font-size: 9px; 
-            opacity: 0.3; 
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-          }
-
-          .pulse {
-            width: 8px;
-            height: 8px;
-            background: var(--neon);
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 10px;
-            animation: pulse-glow 2s infinite;
-          }
-
-          @keyframes pulse-glow {
-            0% { box-shadow: 0 0 0 0px rgba(0, 255, 0, 0.7); }
-            100% { box-shadow: 0 0 0 10px rgba(0, 255, 0, 0); }
-          }
-        </style>
-      </head>
-      <body>
-        <canvas id="matrix"></canvas>
-        <div id="toast" class="toast">LINK_BATCH_COPIED_TO_CLIPBOARD</div>
-
-        <div class="container">
-          <div class="header">
-            <div class="meta">XTREAM_CORE // SYSTEM_DUMP // R-TYPE: M3U_PLAYLIST</div>
-            <h1 class="title">${title}</h1>
-          </div>
-
-          <div class="toolbar">
-            <button class="btn copy-btn" onclick="copyAll()">
-              <span class="pulse"></span>
-              COPY_ALL_DATA
-            </button>
-            <button class="btn" onclick="window.close()">
-              TERMINATE_SESSION
-            </button>
-          </div>
-
-          <div class="code-wrapper">
-            <pre id="m3u-content">${m3uContent}</pre>
-          </div>
-
-          <div class="footer">
-            <span>ENCRYPTED STREAM LINKS - AUTHENTICATION ATTACHED - (C) 2026 NEURAL COMMAND</span>
-            <span>OS_VERSION: 9.2.0-STABLE // BUILD: 0X8273F</span>
-          </div>
-        </div>
-
-        <script>
-          const canvas = document.getElementById('matrix');
-          const ctx = canvas.getContext('2d');
-
-          canvas.width = window.innerWidth;
-          canvas.height = window.innerHeight;
-
-          const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()*&^%';
-          const fontSize = 14;
-          const columns = canvas.width / fontSize;
-          const drops = Array(Math.floor(columns)).fill(1);
-
-          function draw() {
-            ctx.fillStyle = 'rgba(5, 5, 5, 0.05)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-            ctx.fillStyle = '#0F0';
-            ctx.font = fontSize + 'px monospace';
-
-            for (let i = 0; i < drops.length; i++) {
-              const text = letters.charAt(Math.floor(Math.random() * letters.length));
-              ctx.fillText(text, i * fontSize, drops[i] * fontSize);
-              if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) {
-                drops[i] = 0;
-              }
-              drops[i]++;
-            }
-          }
-
-          setInterval(draw, 33);
-
-          function copyAll() {
-            const content = document.getElementById('m3u-content').innerText;
-            navigator.clipboard.writeText(content).then(() => {
-              const toast = document.getElementById('toast');
-              toast.classList.add('active');
-              setTimeout(() => toast.classList.remove('active'), 2500);
-            });
-          }
-
-          window.onresize = () => {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-          };
-        </script>
-      </body>
-      </html>
-    `;
-    const blob = new Blob([html], { type: 'text/html' });
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank');
   };
 
   const handleViewM3U = async () => {
@@ -2232,9 +2399,21 @@ const ContentCard = ({ item, type, xtream, addLog, categories, onOpenSeries, isM
     <motion.div 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      className="hacker-border bg-gray-900 aspect-[2/3] group relative overflow-hidden flex flex-col"
+      onClick={() => isSelectionMode && onToggleSelection?.()}
+      className={`hacker-border aspect-[2/3] group relative overflow-hidden flex flex-col cursor-pointer transition-all ${
+        isSelected ? 'border-[#00FF00] scale-95 shadow-[0_0_20px_rgba(0,255,0,0.3)] bg-[#00FF00]/10' : 'bg-gray-900'
+      }`}
     >
-      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all z-10" />
+      {isSelectionMode && (
+        <div className="absolute top-2 right-2 z-50">
+          <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+            isSelected ? 'bg-[#00FF00] border-[#00FF00]' : 'bg-black/50 border-white/40'
+          }`}>
+            {isSelected && <Zap className="w-3 h-3 text-black" />}
+          </div>
+        </div>
+      )}
+      <div className={`absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all z-10 ${isSelected ? 'bg-black/40' : ''}`} />
       
       {icon ? (
         <img src={icon} alt={name} className="w-full h-full object-cover group-hover:scale-110 transition-transform duration-700" referrerPolicy="no-referrer" />
