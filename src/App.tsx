@@ -153,23 +153,9 @@ export default function App() {
       // 2. Raw M3U Fallback (Standard M3U files)
       addLog('RAW_M3U DETECTED. ANALYZING DATA STRUCTURE...');
       const response = await fetch(`/api/proxy?url=${encodeURIComponent(m3uUrl)}`);
-      
-      if (!response.ok) {
-        let errMsg = `FETCH_FAILED: ${response.status}`;
-        try {
-          const errData = await response.json();
-          errMsg = `FETCH_FAILED: ${response.status} - ${errData.error || ''}`;
-        } catch(e) {}
-        throw new Error(errMsg);
-      }
+      if (!response.ok) throw new Error('FAILED TO FETCH M3U DATA');
       
       const content = await response.text();
-      
-      // If content is very short or looks like an error page
-      if (content.length < 500 && (content.includes('<!DOCTYPE') || content.includes('<html'))) {
-         throw new Error('PROVIDER_BLOCKED_REQUEST: Received HTML instead of M3U. The provider might be blocking Cloud IPs.');
-      }
-
       const playlist = parseM3U(content);
       
       setM3uPlaylist(playlist);
@@ -300,9 +286,7 @@ export default function App() {
       setLoading(false);
     } catch (err: any) {
       addLog(`ERR: CONNECTION_REJECTED - ${err.message}`);
-      const isHtmlError = err.message.includes('<!DOCTYPE') || err.message.includes('returned HTML');
-      const tip = isHtmlError ? '\nTIP: Provider might be blocking Cloud/Server IPs. Try alternate Provider.' : '';
-      setError(`CONNECTION_ERROR: ${err.message || 'Invalid credentials or Server Unreachable'}${tip}`);
+      setError('Invalid credentials or Server Unreachable');
       setLoading(false);
     }
   }, [auth, exportAuth, addLog]);
