@@ -258,6 +258,13 @@ export default function App() {
     addLog('HANDSHAKE INITIATED With REMOTE SERVER...');
 
     try {
+      // Test proxy connectivity first
+      const proxyTest = await fetch('/api/proxy?url=' + encodeURIComponent('https://google.com')).catch(() => null);
+      if (!proxyTest || !proxyTest.ok) {
+        addLog('CRITICAL_ERR: API_PROXY_UNREACHABLE. Vercel deployment might be missing serverless functions.');
+        throw new Error('API Proxy connection failed. If you just deployed to Vercel, check vercel.json and api/ directory.');
+      }
+
       const service = new XtreamService(targetAuth, exportAuth);
       await service.testConnection();
       
@@ -313,7 +320,10 @@ export default function App() {
         signInAnonymously(fbAuth).catch(err => {
           if (err.code === 'auth/admin-restricted-operation') {
             addLog('ERR: TRACKER_AUTH_DISABLED. ENABLE "ANONYMOUS LOGIN" IN FIREBASE CONSOLE.');
+          } else if (err.code === 'auth/unauthorized-domain') {
+            addLog('ERR: UNAUTHORIZED_DOMAIN. Add your Vercel URL to "Authorized domains" in Firebase Console.');
           } else {
+            addLog(`ERR: FB_AUTH_FAILURE [${err.code}]`);
             console.error("FB Auth Error", err);
           }
         });
