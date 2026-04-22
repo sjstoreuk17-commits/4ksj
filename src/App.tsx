@@ -2424,6 +2424,16 @@ const ContentCard = ({
         </div>
       )}
 
+      {/* Persistent Title Overlay - Always Visible */}
+      <div className="absolute inset-x-0 bottom-0 pt-10 pb-3 px-3 bg-gradient-to-t from-black via-black/80 to-transparent z-20 pointer-events-none group-hover:opacity-0 transition-opacity duration-300">
+        <div className="relative">
+          <div className="absolute -left-1 top-0 bottom-0 w-[2px] bg-[#00FF00] shadow-[0_0_10px_rgba(0,255,0,0.5)]" />
+          <h4 className="text-[10px] sm:text-[11px] font-black uppercase line-clamp-2 leading-tight tracking-[0.05em] pl-3 text-[#00FF00] drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
+            {name}
+          </h4>
+        </div>
+      </div>
+
       {/* Hover Overlay */}
       <div className="absolute inset-x-0 bottom-0 p-3 translate-y-full group-hover:translate-y-0 transition-transform duration-300 z-20 bg-black/95 border-t border-[#00FF00]/40 backdrop-blur-md">
         {showRangeSelector ? (
