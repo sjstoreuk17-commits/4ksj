@@ -4,6 +4,7 @@
  */
 
 import { XtreamAuth, XtreamCategory, XtreamStream, XtreamSeries, XtreamSeriesInfo, XtreamEpisode } from '../types';
+import { fetchApiData } from '../services/proxyEngine';
 
 export class XtreamService {
   private auth: XtreamAuth;
@@ -38,13 +39,7 @@ export class XtreamService {
     });
 
     const targetUrl = `${this.auth.url}/player_api.php?${params.toString()}`;
-    const proxyUrl = `/api/proxy?url=${encodeURIComponent(targetUrl)}&cache=${useCache}`;
-
-    const response = await fetch(proxyUrl);
-    if (!response.ok) {
-      throw new Error(`XTREAM_API_ERROR: ${response.status}`);
-    }
-    return response.json();
+    return fetchApiData(targetUrl, useCache);
   }
 
   async testConnection(): Promise<any> {

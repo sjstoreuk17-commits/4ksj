@@ -49,15 +49,17 @@ import {
   Shield,
   QrCode,
   Key,
+  Plus,
   FileText,
   ChevronLeft
 } from 'lucide-react';
 import { XtreamService } from './lib/xtreamService';
 import { XtreamAuth, XtreamCategory, XtreamStream, XtreamSeries, XtreamSeriesInfo, XtreamEpisode, M3UEntry, M3UPlaylist } from './types';
 import { copyToClipboard, parseM3U } from './lib/m3uParser';
+import { fetchApiData } from './services/proxyEngine';
 import { auth as fbAuth, db } from './lib/firebase';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc, setDoc, onSnapshot } from 'firebase/firestore';
+import { doc, getDoc, setDoc, onSnapshot, collection, addDoc, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
 type AuthMode = 'gateway' | 'xtream' | 'm3u' | 'admin';
 
@@ -65,6 +67,8 @@ export default function App() {
   const [authMode, setAuthMode] = useState<AuthMode>('gateway');
   const [adminPass, setAdminPass] = useState('');
   const [m3uUrl, setM3uUrl] = useState('');
+  const [accessKey, setAccessKey] = useState('');
+  const [adminKeys, setAdminKeys] = useState<{id: string, key: string, createdAt: any}[]>([]);
   
   const [auth, setAuth] = useState<XtreamAuth>({ 
     url: '', 
@@ -87,6 +91,8 @@ export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [isInitializing, setIsInitializing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [isGeneratingKey, setIsGeneratingKey] = useState(false);
+  const [customKeyName, setCustomKeyName] = useState('');
   const [error, setError] = useState<string | null>(null);
 
   const [vodCats, setVodCats] = useState<XtreamCategory[]>([]);
@@ -94,7 +100,7 @@ export default function App() {
   const [currentStreams, setCurrentStreams] = useState<XtreamStream[]>([]);
   const [currentSeries, setCurrentSeries] = useState<XtreamSeries[]>([]);
   
-  const [currentView, setCurrentView] = useState<'home' | 'movies' | 'series'>('home');
+  const [currentView, setCurrentView] = useState<'home' | 'movies' | 'series' | 'admin_panel'>('home');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [categorySearchQuery, setCategorySearchQuery] = useState('');
@@ -123,6 +129,30 @@ export default function App() {
     setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 30));
   }, []);
 
+  const checkAccessKey = async () => {
+    if (!accessKey) {
+      setError('ACCESS_DENIED: TERMINAL_KEY_REQUIRED');
+      addLog('SECURITY_ALERT: ACCESS_KEY_MISSING');
+      return false;
+    }
+    
+    try {
+      const q = query(collection(db, 'license_keys'), where('key', '==', accessKey));
+      const querySnapshot = await getDocs(q);
+      
+      if (querySnapshot.empty) {
+        setError('ACCESS_DENIED: INVALID_TERMINAL_KEY');
+        addLog('SECURITY_ALERT: FRAUDULENT_KEY_DETECTED');
+        return false;
+      }
+      addLog('TERMINAL_KEY_VALIDATED. SECURITY_SHIELD_READY.');
+      return true;
+    } catch (e: any) {
+      setError('ACCESS_DENIED: SECURITY_SERVICE_OFFLINE');
+      return false;
+    }
+  };
+
   const handleM3ULogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!m3uUrl) return;
@@ -131,26 +161,39 @@ export default function App() {
     setError(null);
     addLog('INITIATING M3U DATA PIPELINE...');
 
-    const fetchRawM3U = async () => {
-      addLog('FETCHING RAW M3U DATA...');
-      const response = await fetch(`/api/proxy?url=${encodeURIComponent(m3uUrl)}`);
-      if (!response.ok) throw new Error(`PROXY_FETCH_FAILED: ${response.status}`);
-      
-      const content = await response.text();
-      if (!content || !content.includes('#EXTM3U')) {
-        throw new Error('INVALID_M3U_FORMAT: Payload does not contain #EXTM3U header');
+    try {
+      // 1. Try Xtream Tunneling first (standard Xtream M3U links have creds in params)
+      try {
+        const urlObj = new URL(m3uUrl);
+        const username = urlObj.searchParams.get('username');
+        const password = urlObj.searchParams.get('password');
+        const serverUrl = `${urlObj.protocol}//${urlObj.host}`;
+
+        if (username && password) {
+          addLog('XTREAM_CREDENTIALS DETECTED. UPGRADING SESSION...');
+          const newAuth = { url: serverUrl, username, password };
+          setAuth(newAuth);
+          await handleLogin(newAuth);
+          return;
+        }
+      } catch (urlErr) {
+        // Not a standard URL or parsing failed, fallback to raw fetch
       }
 
-      const playlist = parseM3U(content);
+      // 2. Raw M3U Fallback (Standard M3U files)
+      addLog('RAW_M3U DETECTED. ANALYZING DATA STRUCTURE...');
+      // Using fetchApiData instead of direct fetch to /api/proxy
+      const content = await fetchApiData(m3uUrl, false);
+      
+      const playlist = parseM3U(typeof content === 'string' ? content : JSON.stringify(content));
+      
       setM3uPlaylist(playlist);
       setIsM3UMode(true);
       setCurrentView('home');
+      setIsLoggedIn(true);
       
-      addLog(`M3U_EXTRACT_SUCCESS: ${playlist.entries.length} ITEMS FOUND.`);
-      
-      // Setup UI collections from M3U
       const movieCats: XtreamCategory[] = playlist.categories
-        .filter(c => playlist.entries.some(e => e.group === c && e.type === 'movie'))
+        .filter(c => playlist.entries.some(e => e.group === c && (e.type === 'movie' || (playlist.entries.filter(x => x.type !== 'unknown').length === 0 && e.type === 'unknown'))))
         .map(c => ({ category_id: c, category_name: c, parent_id: 0 }));
       setVodCats(movieCats);
 
@@ -160,7 +203,7 @@ export default function App() {
       setSeriesCats(seriesCats);
 
       const movies: XtreamStream[] = playlist.entries
-        .filter(e => e.type === 'movie')
+        .filter(e => e.type === 'movie' || (playlist.entries.filter(x => x.type !== 'unknown').length === 0 && e.type === 'unknown'))
         .map((e, i) => ({
           num: i + 1,
           name: e.name,
@@ -175,77 +218,132 @@ export default function App() {
         }));
       setCurrentStreams(movies);
 
+      // Map & GROUP Series for M3U to enable EXTRACT_EPISODES for raw playlists
       const seriesEntries = playlist.entries.filter(e => e.type === 'series');
       const seriesMap = new Map<string, XtreamSeries & { localEpisodes?: XtreamEpisode[] }>();
 
       seriesEntries.forEach(e => {
+        // Group by base name to treat individual M3U lines as one series
         const baseName = e.name.replace(/\s*[sS]\d+\s*[eE]\d+.*$|\s*[sS]eason\s*\d+\s*[eE]pisode\s*\d+.*$/i, '').trim() || e.name;
+        
         if (!seriesMap.has(baseName)) {
           seriesMap.set(baseName, {
-            num: 0, name: baseName, series_id: Math.floor(Math.random() * 1000000),
-            cover: e.logo || '', plot: 'M3U_EXTRACTED', cast: '', director: '', genre: e.group, releaseDate: '',
-            last_modified: '', rating: '', rating_5_0: 0, backdrop_path: [], youtube_trailer: '', 
-            episode_run_time: '', category_id: e.group, localEpisodes: []
+            num: 0,
+            name: baseName,
+            series_id: Math.floor(Math.random() * 1000000),
+            cover: e.logo || '',
+            plot: 'M3U_SYNTHETIC_GROUP',
+            cast: '', director: '', genre: e.group, releaseDate: '', last_modified: '', rating: '', rating_5_0: 0,
+            backdrop_path: [], youtube_trailer: '', episode_run_time: '',
+            category_id: e.group,
+            localEpisodes: []
           });
         }
+        
         const series = seriesMap.get(baseName)!;
         const epMatch = e.name.match(/[eE](\d+)/);
         const epNum = epMatch ? parseInt(epMatch[1]) : series.localEpisodes!.length + 1;
+        
         series.localEpisodes!.push({
-          id: e.id, episode_num: epNum, season: 1, title: e.name, container_extension: 'ts',
+          id: e.id,
+          episode_num: epNum,
+          season: 1,
+          title: e.name,
+          container_extension: 'ts',
           info: { duration: '', movie_image: e.logo || '', plot: '', rating: '', release_date: '' },
-          raw_url: e.url
+          raw_url: e.url // Custom field for M3U direct playback
         } as any);
       });
 
       setCurrentSeries(Array.from(seriesMap.values()));
-      setIsLoggedIn(true);
+      addLog(`M3U_PIPELINE_COMPLETE: ${playlist.entries.length} ITEMS EXTRACTED.`);
       setLoading(false);
-    };
-
-    try {
-      // 1. Check for credentials in URL
-      try {
-        const urlObj = new URL(m3uUrl);
-        const username = urlObj.searchParams.get('username');
-        const password = urlObj.searchParams.get('password');
-        const serverUrl = `${urlObj.protocol}//${urlObj.host}`;
-
-        if (username && password) {
-          addLog('XTREAM_CREDENTIALS DETECTED. ATTEMPTING HANDSHAKE...');
-          const newAuth = { url: serverUrl, username, password };
-          setAuth(newAuth);
-          
-          try {
-            const service = new XtreamService(newAuth, exportAuth);
-            await service.testConnection();
-            addLog('API_HANDSHAKE_SUCCESS. SYNCHRONIZING...');
-            await handleLogin(newAuth);
-            return;
-          } catch (apiErr) {
-            addLog('XTREAM_API_UNREACHABLE. FALLING BACK TO RAW_M3U...');
-            await fetchRawM3U();
-            return;
-          }
-        }
-      } catch (urlErr) {
-        // Not a standard Xtream URL, continue to raw fetch
-      }
-
-      // 2. Direct M3U Fetch
-      await fetchRawM3U();
 
     } catch (err: any) {
       setError(`Login failed: ${err.message}`);
-      addLog(`ERR: TUNNEL_FAILURE - ${err.message}`);
+      addLog(`ERR: M3U_TUNNEL_FAILURE - ${err.message}`);
       setLoading(false);
     }
   };
 
-  const handleAdminAuth = (e: React.FormEvent) => {
+  const fetchAdminKeys = async () => {
+    try {
+      addLog("FETCHING_KEYS...");
+      const q = query(collection(db, 'license_keys'));
+      const snapshot = await getDocs(q);
+      const keys = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+      setAdminKeys(keys);
+      addLog(`FETCH_COMPLETE: ${keys.length} KEYS_FOUND`);
+    } catch (e: any) {
+      console.error("Failed to fetch keys", e);
+      addLog(`ERR: FETCH_KEYS_FAILED [${e.message.substring(0, 30)}]`);
+    }
+  };
+
+  const generateNewKey = async () => {
+    if (isGeneratingKey) return;
+    
+    const keyName = customKeyName.trim();
+    if (keyName && keyName.length < 5) {
+      addLog('ERR: NAME_TOO_SHORT (MIN 5 CHARS)');
+      return;
+    }
+
+    setIsGeneratingKey(true);
+    addLog("INIT_SECURE_GENERATION...");
+    
+    // Use custom name if provided, else generate random
+    const newKey = keyName 
+      ? keyName.toUpperCase()
+      : Math.random().toString(36).substring(2, 10).toUpperCase() + '-' + Math.random().toString(36).substring(2, 10).toUpperCase();
+
+    try {
+      const colRef = collection(db, 'license_keys');
+      
+      addLog("CONNECTING_TO_DATABASE...");
+      
+      // Add a timeout to the firestore operation
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("FIREBASE_TIMEOUT: NO_RESPONSE_FROM_SERVER")), 10000)
+      );
+
+      await Promise.race([
+        addDoc(colRef, {
+          key: newKey,
+          createdAt: new Date().toISOString() // Use ISO string as fallback if serverTimestamp hangs
+        }),
+        timeoutPromise
+      ]);
+
+      await fetchAdminKeys();
+      setCustomKeyName('');
+      addLog(`SUCCESS: KEY_REGISTERED [${newKey}]`);
+    } catch (e: any) {
+      console.error(e);
+      addLog(`ERR: ${e.message.includes('permission') ? 'PERM_DENIED: ENABLE ANALYTICS/AUTH' : 'GENERATION_FAILED'}`);
+      if (e.message.includes('TIMEOUT')) {
+        addLog('HINT: REFRESH_PAGE OR ENABLE_ANONYMOUS_AUTH');
+      }
+    } finally {
+      setIsGeneratingKey(false);
+    }
+  };
+
+  const deleteKey = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, 'license_keys', id));
+      fetchAdminKeys();
+      addLog('KEY_TERMINATED_SUCCESSFULLY');
+    } catch (e) {
+      addLog('ERR: KEY_REMOVAL_FAILED');
+    }
+  };
+
+  const handleAdminAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     if (adminPass === 'sajid122') {
       setAuth(adminAuth);
+      await fetchAdminKeys();
       handleLogin(adminAuth);
     } else {
       setError('ACCESS_DENIED: INVALID_MAINFRAME_KEY');
@@ -265,10 +363,9 @@ export default function App() {
 
     try {
       const service = new XtreamService(targetAuth, exportAuth);
-      addLog(`HANDSHAKE: [${targetAuth.url}]`);
       await service.testConnection();
       
-      addLog('ACCESS_GRANTED. RETRIEVING CATEGORIES...');
+      addLog('ACCESS GRANTED. FETCHING SCHEMAS...');
       const [vCats, sCats] = await Promise.all([
         service.getVodCategories(),
         service.getSeriesCategories()
@@ -277,7 +374,7 @@ export default function App() {
       setVodCats(vCats);
       setSeriesCats(sCats);
       
-      addLog(`DB_SYNC: [VOD: ${vCats.length}L | SERIES: ${sCats.length}L]`);
+      addLog('FETCHING ENTIRE CONTENT DATABASE...');
       const [streams, series] = await Promise.all([
         service.getVodStreams(),
         service.getSeries()
@@ -289,20 +386,11 @@ export default function App() {
       setIsLoggedIn(true);
       setIsM3UMode(false);
       
-      addLog('MAINFRAME_SYNC COMPLETE. SESSION_ESTABLISHED.');
+      addLog('CONNECTION SECURE. CORE DATA SYNCED.');
       setLoading(false);
     } catch (err: any) {
-      const errorMsg = err.message || 'Unknown network error';
-      addLog(`ERR: CONNECTION_REJECTED - ${errorMsg}`);
-      
-      if (errorMsg.includes('403')) {
-        setError('SERVER_BLOCK: Your IP or this server origin is restricted by the provider.');
-        addLog('HINT: Provider might be blocking Vercel/Cloud IPs.');
-      } else if (errorMsg.includes('404')) {
-        setError('SERVER_NOT_FOUND: The URL provided does not host an Xtream API.');
-      } else {
-        setError(`ACCESS_DENIED: ${errorMsg}`);
-      }
+      addLog(`ERR: CONNECTION_REJECTED - ${err.message}`);
+      setError('Invalid credentials or Server Unreachable');
       setLoading(false);
     }
   }, [auth, exportAuth, addLog]);
@@ -655,6 +743,20 @@ export default function App() {
                         required
                       />
                     </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <Zap className="w-3 h-3 text-yellow-500" /> Terminal Access Key
+                      </label>
+                      <input 
+                        type="text" 
+                        value={accessKey} 
+                        onChange={e => setAccessKey(e.target.value)}
+                        placeholder="XXXX-XXXX-XXXX-XXXX"
+                        className="w-full bg-black/60 border border-yellow-500/20 p-3 text-xs outline-none focus:border-yellow-500 transition-all"
+                        required
+                      />
+                    </div>
                   </div>
 
                   <button 
@@ -704,6 +806,21 @@ export default function App() {
                         required
                       />
                     </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <Zap className="w-3 h-3 text-yellow-500" /> Terminal Access Key
+                      </label>
+                      <input 
+                        type="text" 
+                        value={accessKey} 
+                        onChange={e => setAccessKey(e.target.value)}
+                        placeholder="XXXX-XXXX-XXXX-XXXX"
+                        className="w-full bg-black/60 border border-yellow-500/20 p-3 text-xs outline-none focus:border-yellow-500 transition-all"
+                        required
+                      />
+                    </div>
+
                     <p className="text-[8px] opacity-30 uppercase text-center leading-relaxed">
                       Provider must support CORS extraction. If blocked, local file injection is required.
                     </p>
@@ -851,6 +968,15 @@ export default function App() {
               onClick={() => { setCurrentView('series'); setSelectedCategory(null); }} 
             />
 
+            {auth.username === adminAuth.username && (
+              <SidebarBtn 
+                icon={<Shield className="text-red-500" />} 
+                label="Key Control" 
+                active={currentView === 'admin_panel'} 
+                onClick={() => { setCurrentView('admin_panel'); setSelectedCategory(null); }} 
+              />
+            )}
+
             <div className="my-6 px-6">
               <div className="h-[1px] bg-[#00FF00]/10 w-full" />
             </div>
@@ -938,7 +1064,78 @@ export default function App() {
                   exit={{ opacity: 0, scale: 0.98 }}
                   transition={{ duration: 0.2 }}
                 >
-                  {currentView === 'home' ? (
+                  {currentView === 'admin_panel' ? (
+                    <div className="space-y-8">
+                       <header className="border-b border-red-500/20 pb-6 flex flex-col xl:flex-row xl:items-center justify-between gap-6">
+                         <div className="flex items-center gap-4">
+                           <Shield className="w-8 h-8 text-red-500 flex-shrink-0" />
+                           <div>
+                             <h2 className="text-xl md:text-2xl font-black uppercase italic tracking-tighter text-red-500">Terminal Access Control</h2>
+                             <p className="text-[10px] opacity-40 uppercase font-black">Generate & Manage Secure Extraction Keys</p>
+                           </div>
+                         </div>
+                         
+                         <div className="flex flex-col sm:flex-row gap-3 w-full xl:w-auto">
+                           <div className="relative group flex-1 xl:w-64">
+                             <input 
+                               type="text"
+                               value={customKeyName}
+                               onChange={(e) => setCustomKeyName(e.target.value)}
+                               placeholder="ENTER_CUSTOM_NAME_OR_LEAVE_BLANK"
+                               className="w-full bg-black border border-red-500/30 p-3 text-[10px] uppercase font-bold outline-none focus:border-red-500 transition-all placeholder:opacity-20"
+                             />
+                             <div className="absolute top-0 right-3 h-full flex items-center pointer-events-none">
+                               <Key className="w-3 h-3 opacity-20" />
+                             </div>
+                           </div>
+                           <button 
+                             onClick={generateNewKey}
+                             disabled={isGeneratingKey}
+                             className="bg-red-500 text-black px-8 py-3 font-black uppercase text-xs hover:bg-red-600 transition-all shadow-[0_0_20px_rgba(239,68,68,0.3)] disabled:opacity-50 flex items-center justify-center gap-2 whitespace-nowrap"
+                           >
+                             {isGeneratingKey ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+                             {isGeneratingKey ? 'DIVERGING...' : 'CREATE_LICENSE_KEY'}
+                           </button>
+                         </div>
+                       </header>
+
+                       <div className="grid gap-4">
+                         {adminKeys.length === 0 ? (
+                           <div className="h-64 border border-dashed border-white/10 flex items-center justify-center opacity-20 uppercase text-xs italic tracking-widest">
+                             No_Active_Keys_In_Database
+                           </div>
+                         ) : (
+                           adminKeys.map(k => (
+                             <div key={k.id} className="hacker-border bg-black/40 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                               <div className="flex items-center gap-4 md:gap-6">
+                                 <div className="w-10 h-10 bg-red-500/10 border border-red-500/20 rounded flex items-center justify-center flex-shrink-0">
+                                   <Zap className="w-5 h-5 text-yellow-500" />
+                                 </div>
+                                 <div className="space-y-1 min-w-0">
+                                   <div className="text-sm md:text-lg font-black tracking-[0.2em] text-white truncate">[{k.key}]</div>
+                                   <div className="text-[8px] opacity-30 uppercase font-bold tracking-widest truncate">UID: {k.id} // SECURE_ACCESS_LICENSE</div>
+                                 </div>
+                               </div>
+                               <div className="flex items-center gap-3 justify-end">
+                                 <button 
+                                   onClick={() => copyToClipboard(k.key)}
+                                   className="p-2 border border-white/10 hover:border-white/40 opacity-40 hover:opacity-100 transition-all"
+                                 >
+                                   <Copy className="w-4 h-4" />
+                                 </button>
+                                 <button 
+                                   onClick={() => deleteKey(k.id)}
+                                   className="p-2 border border-red-500/20 hover:border-red-500 bg-red-500/10 hover:bg-red-500 text-red-500 hover:text-black transition-all"
+                                 >
+                                   <Lock className="w-4 h-4" />
+                                 </button>
+                               </div>
+                             </div>
+                           ))
+                         )}
+                       </div>
+                    </div>
+                  ) : currentView === 'home' ? (
                     <div className="grid grid-cols-1 gap-8 lg:gap-12">
                       <div className="space-y-6">
                         <header className="flex items-center justify-between border-b border-[#00FF00]/20 pb-4">
@@ -1152,8 +1349,16 @@ export default function App() {
            icon={<Filter className="w-5 h-5" />} 
            label="Filter" 
            onClick={() => setShowMobileCats(!showMobileCats)} 
-           disabled={currentView === 'home'}
+           disabled={currentView === 'home' || currentView === 'admin_panel'}
          />
+         {auth.username === adminAuth.username && (
+           <MobileNavBtn 
+             active={currentView === 'admin_panel'} 
+             icon={<Shield className="w-5 h-5 text-red-500" />} 
+             label="Keys" 
+             onClick={() => { setCurrentView('admin_panel'); setSelectedCategory(null); }} 
+           />
+         )}
       </nav>
 
       {/* Category Action Prompt Modal */}

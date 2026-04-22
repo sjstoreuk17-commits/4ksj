@@ -41,17 +41,24 @@ export function parseM3U(content: string): M3UPlaylist {
         currentEntry.url = line;
         currentEntry.raw += '\n' + line;
         
-        // Basic heuristic for type
+        // Advanced heuristic for type
         const lowerGroup = currentEntry.group?.toLowerCase() || '';
         const lowerName = currentEntry.name?.toLowerCase() || '';
+        const lowerUrl = currentEntry.url?.toLowerCase() || '';
         
         let type: M3UEntry['type'] = 'unknown';
-        if (lowerGroup.includes('movie') || lowerGroup.includes('film')) {
+        const isVideoFile = /\.(mp4|mkv|avi|mov|wmv|flv|mpg|mpeg|ts|m4v)$/i.test(lowerUrl);
+        const hasSeriesKey = lowerName.includes(' s') && lowerName.includes('e') && /\s[sS]\d+[eE]\d+/.test(lowerName); // S01E01 pattern
+
+        if (lowerGroup.includes('movie') || lowerGroup.includes('film') || lowerGroup.includes('vod') || lowerGroup.includes('cinema')) {
           type = 'movie';
-        } else if (lowerGroup.includes('series') || lowerGroup.includes('show') || lowerGroup.includes('season')) {
+        } else if (lowerGroup.includes('series') || lowerGroup.includes('show') || lowerGroup.includes('season') || hasSeriesKey) {
           type = 'series';
-        } else if (lowerGroup.includes('live') || lowerGroup.includes('tv')) {
+        } else if (lowerGroup.includes('live') || lowerGroup.includes('tv') || lowerUrl.includes('.m3u8')) {
           type = 'live';
+        } else if (isVideoFile) {
+          // If it's a file extension and not clearly a series, default to movie
+          type = 'movie';
         }
 
         entries.push({ ...currentEntry, type } as M3UEntry);

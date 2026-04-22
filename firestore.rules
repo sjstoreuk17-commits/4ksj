@@ -13,12 +13,23 @@ service cloud.firestore {
       allow read: if isOwner(userId);
       allow create: if isOwner(userId) && isValidTracker(request.resource.data);
       allow update: if isOwner(userId) && isValidTracker(request.resource.data);
-      allow delete: if false; // Prevention of accidental data loss
+      allow delete: if false;
+    }
+
+    // License Key Rules
+    match /license_keys/{keyId} {
+      allow read, list, create, delete: if true;
     }
 
     // Helper Functions
     function isSignedIn() {
       return request.auth != null;
+    }
+
+    function isValidKey(data) {
+      return data.keys().hasAll(['key', 'createdAt']) &&
+             data.key is string &&
+             data.key.size() >= 5;
     }
 
     function isOwner(userId) {
