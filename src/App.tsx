@@ -51,13 +51,15 @@ import {
   Key,
   Plus,
   FileText,
-  ChevronLeft
+  ChevronLeft,
+  Type
 } from 'lucide-react';
 import { XtreamService } from './lib/xtreamService';
 import { XtreamAuth, XtreamCategory, XtreamStream, XtreamSeries, XtreamSeriesInfo, XtreamEpisode, M3UEntry, M3UPlaylist } from './types';
 import { copyToClipboard, parseM3U } from './lib/m3uParser';
 import { fetchApiData } from './services/proxyEngine';
 import { MergerService, MergedSeriesItem } from './services/mergerService';
+import { PosterGenerator } from './services/posterGenerator';
 import { auth as fbAuth, db } from './lib/firebase';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, addDoc, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
@@ -118,6 +120,7 @@ export default function App() {
   // Multi-Series Merger State
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedSeries, setSelectedSeries] = useState<Map<number, XtreamSeries>>(new Map());
+  const [episodeRegistry, setEpisodeRegistry] = useState<Map<number, number>>(new Map());
   const [showMergerModal, setShowMergerModal] = useState(false);
 
   // Persistence Tracker State
@@ -400,13 +403,14 @@ export default function App() {
     }
   }, [auth, exportAuth, addLog]);
 
-  const toggleSelection = (s: XtreamSeries) => {
+  const toggleSelection = (s: any) => {
+    const id = s.series_id || s.stream_id;
     setSelectedSeries(prev => {
       const next = new Map(prev);
-      if (next.has(s.series_id)) {
-        next.delete(s.series_id);
+      if (next.has(id)) {
+        next.delete(id);
       } else {
-        next.set(s.series_id, s);
+        next.set(id, s);
       }
       return next;
     });
@@ -1149,7 +1153,7 @@ export default function App() {
                              Full Archive <ChevronRight className="w-3 h-3" />
                           </button>
                         </header>
-                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                        <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 lg:gap-4">
                           {recentlyAddedMovies.slice(0, 100).map(item => (
                             <React.Fragment key={item.stream_id}>
                               <ContentCard 
@@ -1158,6 +1162,8 @@ export default function App() {
                                 xtream={xtream!} 
                                 addLog={addLog} 
                                 categories={vodCats}
+                                episodeRegistry={episodeRegistry}
+                                setEpisodeRegistry={setEpisodeRegistry}
                                 isM3UMode={isM3UMode}
                               />
                             </React.Fragment>
@@ -1181,7 +1187,7 @@ export default function App() {
                              Full Archive <ChevronRight className="w-3 h-3" />
                           </button>
                         </header>
-                        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                        <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 lg:gap-4">
                           {recentlyAddedSeries.slice(0, 100).map(item => (
                             <React.Fragment key={item.series_id}>
                               <ContentCard 
@@ -1190,6 +1196,8 @@ export default function App() {
                                 xtream={xtream!} 
                                 addLog={addLog} 
                                 categories={seriesCats}
+                                episodeRegistry={episodeRegistry}
+                                setEpisodeRegistry={setEpisodeRegistry}
                                 onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
                                 isM3UMode={isM3UMode}
                               />
@@ -1219,7 +1227,7 @@ export default function App() {
                             </div>
                           </header>
 
-                          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 lg:gap-4">
                             {(currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats)
                               .filter(cat => cat.category_name.toLowerCase().includes(categorySearchQuery.toLowerCase()))
                               .map(cat => (
@@ -1259,7 +1267,7 @@ export default function App() {
                             </div>
                             
                             <div className="flex items-center gap-3 lg:gap-4">
-                               {currentView === 'series' && selectedCategory && (
+                               {(currentView === 'series' || currentView === 'movies') && selectedCategory && (
                                   <button 
                                     onClick={() => {
                                       setSelectionMode(!selectionMode);
@@ -1275,7 +1283,7 @@ export default function App() {
                                    onClick={() => setShowMergerModal(true)}
                                    className="btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 bg-blue-500 text-white border-blue-400 hover:bg-blue-600 animate-pulse transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)]"
                                  >
-                                   <Zap className="w-3 h-3" /> MERGE_{selectedSeries.size}_SERIES
+                                   <Zap className="w-3 h-3" /> EXPORT_{selectedSeries.size}_ITEMS
                                  </button>
                                )}
                                <div className="relative flex-1 hacker-border px-3 py-1 bg-black/40 flex items-center gap-2">
@@ -1299,7 +1307,7 @@ export default function App() {
                             </div>
                           </header>
 
-                          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3 lg:gap-4">
+                          <div className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 lg:gap-4">
                             {displayList.map(item => (
                                 <React.Fragment key={(item as any).stream_id || (item as any).series_id}>
                                   <ContentCard 
@@ -1308,11 +1316,13 @@ export default function App() {
                                     xtream={xtream!} 
                                     addLog={addLog} 
                                     categories={currentView === 'movies' ? vodCats : seriesCats}
+                                    episodeRegistry={episodeRegistry}
+                                    setEpisodeRegistry={setEpisodeRegistry}
                                     onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
                                     isM3UMode={isM3UMode}
                                     isSelectionMode={selectionMode}
-                                    isSelected={selectedSeries.has((item as any).series_id)}
-                                    onToggleSelection={() => toggleSelection(item as XtreamSeries)}
+                                    isSelected={selectedSeries.has((item as any).series_id || (item as any).stream_id)}
+                                    onToggleSelection={() => toggleSelection(item as any)}
                                   />
                                 </React.Fragment>
                               ))
@@ -1442,9 +1452,11 @@ export default function App() {
       </AnimatePresence>
       <AnimatePresence>
         {showMergerModal && (
-          <MultiSeriesMergerModal 
-            selectedSeries={Array.from(selectedSeries.values())}
+          <BulkExporterModal
+            selectedItems={Array.from(selectedSeries.values())}
+            type={currentView === 'movies' ? 'movie' : 'series'}
             xtream={xtream!}
+            episodeRegistry={episodeRegistry}
             onClose={() => setShowMergerModal(false)}
             addLog={addLog}
             onComplete={() => {
@@ -1854,49 +1866,102 @@ const openM3UTextInTab = (m3uContent: string, title: string) => {
   window.open(url, '_blank');
 };
 
-const MultiSeriesMergerModal = ({ 
-  selectedSeries, 
+const BulkExporterModal = ({ 
+  selectedItems, 
+  type,
   xtream, 
+  episodeRegistry,
   onClose, 
   addLog, 
   onComplete 
 }: { 
-  selectedSeries: XtreamSeries[], 
+  selectedItems: (any)[], 
+  type: 'movie' | 'series',
   xtream: XtreamService, 
+  episodeRegistry: Map<number, number>,
   onClose: () => void, 
   addLog: (m: string) => void,
   onComplete: () => void
 }) => {
   const [isProcessing, setIsProcessing] = React.useState(false);
 
-  const handleExport = async (mode: 'download' | 'text') => {
+  const handleExport = async (mode: 'download' | 'text' | 'frame') => {
     setIsProcessing(true);
-    addLog(`INITIATING_BULK_EXPORT: PROCESSING ${selectedSeries.length} SERIES...`);
+    addLog(`INITIATING_BULK_EXPORT: PROCESSING ${selectedItems.length} ITEMS...`);
 
     try {
-      const merger = new MergerService(xtream);
-      const items: MergedSeriesItem[] = selectedSeries.map(s => ({
-        series: s,
-        language: ""
-      }));
+      if (mode === 'frame') {
+        addLog("POSTER_FRAME: FETCHING METADATA SYNC...");
+        
+        // Sync enriched metadata from registry into the items being passed to generator
+        const enrichedItems = selectedItems.map(item => {
+          const sid = item.series_id || item.stream_id;
+          const regCount = episodeRegistry.get(Number(sid));
+          if (regCount) {
+            return { 
+              ...item, 
+              final_episode_count: regCount,
+              total_episodes: regCount // Explicitly override
+            };
+          }
+          return item;
+        });
 
-      // Use a fixed identifier to trigger individual naming in the merger service
-      const m3u = await merger.generateMergedM3U("Bulk_Export", items, addLog);
-      
-      if (mode === 'download') {
-        const blob = new Blob([m3u], { type: 'text/plain' });
-        const url = URL.createObjectURL(blob);
+        addLog("POSTER_FRAME: GENERATING LUXURY COLLAGE...");
+        const dataUrl = await PosterGenerator.generateCollage(enrichedItems, type, (msg) => addLog(msg));
         const a = document.createElement('a');
-        a.href = url;
-        // Always use the first selected series name for the filename
-        const fileName = selectedSeries[0].name.replace(/\s+/g, '_');
-        a.download = `${fileName}.m3u`;
+        a.href = dataUrl;
+        const fileName = `${selectedItems[0].name.replace(/\s+/g, '_')}_POSTER_FRAME.jpg`;
+        a.download = fileName;
         a.click();
-        URL.revokeObjectURL(url);
-        addLog(`EXPORT_COMPLETE: DOWNLOADED AS [${fileName}.m3u].`);
+        addLog(`POSTER_FRAME: DOWNLOADED AS [${fileName}].`);
+        setIsProcessing(false);
+        return;
+      }
+
+      if (type === 'movie') {
+        // Simple Movie M3U Export
+        let m3u = "#EXTM3U\r\n";
+        selectedItems.forEach(movie => {
+          const url = xtream.generateM3ULink(movie.stream_id, movie.container_extension || 'mp4', 'movie');
+          m3u += `#EXTINF:-1 tvg-id="" tvg-name="${movie.name}" tvg-logo="${movie.stream_icon}" group-title="${movie.name}",${movie.name}\r\n${url}\r\n`;
+        });
+
+        if (mode === 'download') {
+          const blob = new Blob([m3u], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const fileName = selectedItems[0].name.replace(/\s+/g, '_');
+          a.download = `${fileName}.m3u`;
+          a.click();
+          URL.revokeObjectURL(url);
+        } else {
+          openM3UTextInTab(m3u, `${selectedItems[0].name} + ${selectedItems.length - 1} OTHER MOVIES`);
+        }
       } else {
-        openM3UTextInTab(m3u, `${selectedSeries[0].name} + ${selectedSeries.length - 1} OTHER SERIES`);
-        addLog(`EXPORT_COMPLETE: OPENED TERMINAL VIEW.`);
+        const merger = new MergerService(xtream);
+        const items: MergedSeriesItem[] = selectedItems.map(s => ({
+          series: s,
+          language: ""
+        }));
+
+        const m3u = await merger.generateMergedM3U("Bulk_Export", items, addLog);
+        
+        if (mode === 'download') {
+          const blob = new Blob([m3u], { type: 'text/plain' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          const fileName = selectedItems[0].name.replace(/\s+/g, '_');
+          a.download = `${fileName}.m3u`;
+          a.click();
+          URL.revokeObjectURL(url);
+          addLog(`EXPORT_COMPLETE: DOWNLOADED AS [${fileName}.m3u].`);
+        } else {
+          openM3UTextInTab(m3u, `${selectedItems[0].name} + ${selectedItems.length - 1} OTHER SERIES`);
+          addLog(`EXPORT_COMPLETE: OPENED TERMINAL VIEW.`);
+        }
       }
       
       onComplete();
@@ -1917,16 +1982,16 @@ const MultiSeriesMergerModal = ({
       <div className="w-full max-w-2xl hacker-border bg-[#050505] p-6 lg:p-10 space-y-8 overflow-y-auto max-h-[90vh]">
         <div className="space-y-2 border-b border-[#00FF00]/20 pb-6 text-center">
           <h2 className="text-xl font-black uppercase text-[#00FF00] glow-text flex items-center justify-center gap-3 text-2xl">
-             <Zap className="w-8 h-8" /> BULK_SERIES_MACHINE
+             <Zap className="w-8 h-8" /> BULK_ITEM_MACHINE
           </h2>
-          <p className="text-[10px] opacity-40 uppercase font-black tracking-[0.3em] mt-2">Selected Matrix: {selectedSeries.length} Components</p>
+          <p className="text-[10px] opacity-40 uppercase font-black tracking-[0.3em] mt-2">Selected Matrix: {selectedItems.length} Components</p>
         </div>
 
         <div className="space-y-8">
            <div className="grid grid-cols-4 sm:grid-cols-6 gap-3">
-             {selectedSeries.map(s => (
-               <div key={s.series_id} className="aspect-square hacker-border overflow-hidden relative group">
-                 <img src={s.cover} className="w-full h-full object-cover opacity-80" referrerPolicy="no-referrer" />
+             {selectedItems.map((s, idx) => (
+               <div key={idx} className="aspect-square hacker-border overflow-hidden relative group">
+                 <img src={s.cover || s.stream_icon} className="w-full h-full object-cover opacity-80" referrerPolicy="no-referrer" />
                  <div className="absolute inset-0 bg-[#00FF00]/10" />
                </div>
              ))}
@@ -1951,6 +2016,15 @@ const MultiSeriesMergerModal = ({
              >
                {isProcessing ? <Loader2 className="w-6 h-6 animate-spin" /> : <ExternalLink className="w-6 h-6 group-hover:scale-125 transition-transform" />}
                <span className="font-black text-sm">OPEN_M3U_TEXT</span>
+             </button>
+
+             <button 
+                onClick={() => handleExport('frame')}
+                disabled={isProcessing}
+                className="col-span-1 sm:col-span-2 btn-hacker py-6 flex items-center justify-center gap-3 bg-purple-600 text-white border-purple-400 group transition-all hover:scale-[1.02] shadow-[0_0_20px_rgba(168,85,247,0.3)]"
+             >
+               {isProcessing ? <Loader2 className="w-6 h-6 animate-spin" /> : <ImageIcon className="w-6 h-6 group-hover:scale-125 transition-transform" />}
+               <span className="font-black text-sm">GENERATE_POSTER_FRAME</span>
              </button>
            </div>
 
@@ -2153,6 +2227,8 @@ const ContentCard = ({
   xtream, 
   addLog, 
   categories, 
+  episodeRegistry,
+  setEpisodeRegistry,
   onOpenSeries, 
   isM3UMode,
   isSelectionMode,
@@ -2164,6 +2240,8 @@ const ContentCard = ({
   xtream: XtreamService | null, 
   addLog: (m: string) => void, 
   categories: XtreamCategory[], 
+  episodeRegistry: Map<number, number>,
+  setEpisodeRegistry: React.Dispatch<React.SetStateAction<Map<number, number>>>,
   onOpenSeries?: (s: XtreamSeries) => void,
   isM3UMode?: boolean,
   isSelectionMode?: boolean,
@@ -2171,6 +2249,7 @@ const ContentCard = ({
   onToggleSelection?: () => void
 }): React.ReactElement => {
   const [copied, setCopied] = useState(false);
+  const [copiedName, setCopiedName] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showRangeSelector, setShowRangeSelector] = useState(false);
   const [availableEpisodes, setAvailableEpisodes] = useState<XtreamEpisode[]>([]);
@@ -2231,11 +2310,17 @@ const ContentCard = ({
     if (xtream && !isM3UMode) {
       if (type === 'series' && !episodeCount) {
         const series = item as any;
+        const sid = Number(series.series_id);
         const existingCount = series.total_episodes || series.episodes_count || series.episode_count || series.num_episodes || series.total_eps;
-        if (!existingCount) {
-          xtream.getSeriesInfo((item as XtreamSeries).series_id).then(info => {
+        
+        if (existingCount) {
+          setEpisodeCount(Number(existingCount));
+          setEpisodeRegistry(prev => new Map(prev).set(sid, Number(existingCount)));
+        } else {
+          xtream.getSeriesInfo(sid).then(info => {
             const count = Object.values(info.episodes).flat().length;
             setEpisodeCount(count);
+            setEpisodeRegistry(prev => new Map(prev).set(sid, count));
           }).catch(() => {});
         }
       } else if (type === 'movie') {
@@ -2333,6 +2418,13 @@ const ContentCard = ({
     setShowRangeSelector(false);
   };
 
+  const handleCopyName = () => {
+    copyToClipboard(name);
+    setCopiedName(true);
+    addLog(`TITLE_COPIED: ${name}`);
+    setTimeout(() => setCopiedName(false), 2000);
+  };
+
   const handleCopy = async () => {
     if (type === 'series' && !isM3UMode) {
       try {
@@ -2425,124 +2517,124 @@ const ContentCard = ({
       )}
 
       {/* Persistent Title Overlay - Always Visible */}
-      <div className="absolute inset-x-0 bottom-0 pt-10 pb-3 px-3 bg-gradient-to-t from-black via-black/80 to-transparent z-20 pointer-events-none group-hover:opacity-0 transition-opacity duration-300">
+      <div className="absolute inset-x-0 bottom-0 pt-10 pb-3 px-2 sm:px-3 bg-gradient-to-t from-black via-black/80 to-transparent z-20 pointer-events-none group-hover:opacity-0 transition-opacity duration-300">
         <div className="relative">
-          <div className="absolute -left-1 top-0 bottom-0 w-[2px] bg-[#00FF00] shadow-[0_0_10px_rgba(0,255,0,0.5)]" />
-          <h4 className="text-[10px] sm:text-[11px] font-black uppercase line-clamp-2 leading-tight tracking-[0.05em] pl-3 text-[#00FF00] drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
+          <div className="absolute -left-1 top-0 bottom-0 w-[2.5px] bg-[#00FF00] shadow-[0_0_10px_rgba(0,255,0,0.5)]" />
+          <h4 className="text-[9px] sm:text-[11px] font-black uppercase line-clamp-2 leading-tight tracking-[0.05em] pl-2 text-[#00FF00] drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
             {name}
           </h4>
         </div>
       </div>
 
       {/* Hover Overlay */}
-      <div className="absolute inset-x-0 bottom-0 p-3 translate-y-full group-hover:translate-y-0 transition-transform duration-300 z-20 bg-black/95 border-t border-[#00FF00]/40 backdrop-blur-md">
+      <div className="absolute inset-x-0 bottom-0 p-2 sm:p-3 translate-y-full group-hover:translate-y-0 transition-transform duration-300 z-20 bg-black/95 border-t border-[#00FF00]/40 backdrop-blur-md overflow-y-auto max-h-[85%]">
         {showRangeSelector ? (
-          <div className="space-y-3 py-1">
+          <div className="space-y-2 py-1">
             <div className="flex items-center justify-between">
-              <span className="text-[10px] font-black italic glow-text">RANGE_SELECT</span>
+              <span className="text-[9px] font-black italic glow-text">RANGE_SELECT</span>
               <button onClick={() => setShowRangeSelector(false)} className="text-[#00FF00]/60 hover:text-[#00FF00]">
                 <Skull className="w-3 h-3 rotate-45" />
               </button>
             </div>
             
-            <div className="grid grid-cols-2 gap-2">
+            <div className="grid grid-cols-2 gap-1.5">
               <div className="space-y-1">
-                <label className="text-[6px] uppercase opacity-50 block">Start_EP</label>
+                <label className="text-[5px] uppercase opacity-50 block">Start</label>
                 <input 
                   type="number" 
                   value={startRange}
                   onChange={(e) => setStartRange(Number(e.target.value))}
-                  className="w-full bg-black border border-[#00FF00]/30 text-[#00FF00] text-[10px] p-1 focus:border-[#00FF00] outline-none"
+                  className="w-full bg-black border border-[#00FF00]/30 text-[#00FF00] text-[9px] p-1 focus:border-[#00FF00] outline-none"
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[6px] uppercase opacity-50 block">End_EP</label>
+                <label className="text-[5px] uppercase opacity-50 block">End</label>
                 <input 
                   type="number" 
                   value={endRange}
                   onChange={(e) => setEndRange(Number(e.target.value))}
-                  className="w-full bg-black border border-[#00FF00]/30 text-[#00FF00] text-[10px] p-1 focus:border-[#00FF00] outline-none"
+                  className="w-full bg-black border border-[#00FF00]/30 text-[#00FF00] text-[9px] p-1 focus:border-[#00FF00] outline-none"
                 />
               </div>
             </div>
 
-            <div className="flex flex-col gap-1.5 pt-1">
+            <div className="flex flex-col gap-1 pt-1">
               <button 
                 onClick={() => handleRangeExport('all')}
-                className="flex items-center justify-center gap-2 p-1.5 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black border border-[#00FF00]/20 transition-all font-black text-[8px]"
+                className="flex items-center justify-center gap-2 p-1.5 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black border border-[#00FF00]/20 transition-all font-black text-[7.5px]"
               >
-                OPEN_ALL_EPISODES
+                OPEN_ALL
               </button>
               <button 
                 onClick={() => handleRangeExport('range')}
-                className="flex items-center justify-center gap-2 p-1.5 bg-[#00FF00] text-black hover:bg-[#00FF00]/80 transition-all font-black text-[8px]"
+                className="flex items-center justify-center gap-2 p-1.5 bg-[#00FF00] text-black hover:bg-[#00FF00]/80 transition-all font-black text-[7.5px]"
               >
-                EXTRACT_RANGE_EP_{startRange}-{endRange}
+                EXTRACT_{startRange}-{endRange}
               </button>
             </div>
           </div>
         ) : (
-          <>
-            <h4 className="text-[10px] font-black uppercase line-clamp-2 mb-3 leading-tight tracking-tight">{name}</h4>
-            
-            <div className="grid grid-cols-2 gap-2">
-              {type === 'series' && !isM3UMode && (
-                <button 
-                  onClick={() => onOpenSeries?.(item as XtreamSeries)}
-                  className="col-span-2 flex items-center justify-center gap-2 p-2 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all mb-1 shadow-[0_0_10px_rgba(0,255,0,0.05)]"
-                >
-                  <Monitor className="w-3 h-3" />
-                  <span className="text-[8px] font-bold tracking-widest">OPEN_SERIES</span>
-                </button>
-              )}
-              <button 
-                onClick={handleCopy}
-                disabled={exporting}
-                className={`flex flex-col items-center justify-center gap-1 p-2 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all transition-duration-300 disabled:opacity-50 ${type === 'movie' ? 'col-span-2 py-4' : ''}`}
-              >
-                {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : (copied ? <RefreshCcw className="w-3 h-3 animate-spin" /> : <Copy className="w-3 h-3" />)}
-                <span className="text-[8px] font-bold">{exporting ? 'SYNC...' : (copied ? 'COPIED' : 'COPY_LNK')}</span>
-              </button>
-              
-              {type === 'series' && (
-                <>
-                  <button 
-                    onClick={handleDownload}
-                    disabled={exporting}
-                    className="flex flex-col items-center justify-center gap-1 p-2 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all transition-duration-300 disabled:opacity-50"
-                  >
-                    {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-                    <span className="text-[8px] font-bold">{exporting ? 'SYNC...' : 'DUMP_M3U'}</span>
-                  </button>
-                  <button 
-                    onClick={handleViewM3U}
-                    disabled={exporting}
-                    className="col-span-2 flex items-center justify-center gap-2 p-2 mt-1 border border-[#00FF00]/40 hover:bg-[#00FF00] hover:text-black transition-all disabled:opacity-50"
-                  >
-                    {exporting ? <Loader2 className="w-3 h-3 animate-spin" /> : <ExternalLink className="w-3 h-3" />}
-                    <span className="text-[8px] font-black tracking-widest uppercase">EXTRACT_EPISODES</span>
-                  </button>
-                </>
-              )}
+          <div className="grid grid-cols-2 gap-1.5 pt-1">
+            <button 
+              onClick={handleCopyName}
+              className="col-span-2 flex items-center justify-center gap-2 py-1.5 px-1 bg-[#00FF00]/20 hover:bg-[#00FF00] hover:text-black transition-all mb-0.5 border border-[#00FF00]/30"
+            >
+              <Type className="w-2.5 h-2.5" />
+              <span className="text-[7.5px] font-black tracking-widest uppercase">{copiedName ? 'NAME_COPIED' : 'COPY_TITLE_NAME'}</span>
+            </button>
 
+            {type === 'series' && !isM3UMode && (
               <button 
-                onClick={handleCopyPoster}
-                className="col-span-2 flex items-center justify-center gap-2 p-2 border border-dashed border-[#00FF00]/20 hover:border-[#00FF00] hover:bg-[#00FF00]/5 transition-all text-[7px]"
+                onClick={() => onOpenSeries?.(item as XtreamSeries)}
+                className="col-span-2 flex items-center justify-center gap-2 py-1.5 px-1 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all mb-0.5 shadow-[0_0_10px_rgba(0,255,0,0.05)]"
               >
-                <ImageIcon className="w-2.5 h-2.5" />
-                <span className="font-black tracking-widest uppercase">Copy_Poster_URL</span>
+                <Monitor className="w-2.5 h-2.5" />
+                <span className="text-[7.5px] font-bold tracking-widest uppercase">OPEN_SERIES</span>
               </button>
-            </div>
-          </>
+            )}
+            <button 
+              onClick={handleCopy}
+              disabled={exporting}
+              className={`flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all disabled:opacity-50 ${type === 'movie' ? 'col-span-2 py-2.5' : ''}`}
+            >
+              {exporting ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : (copied ? <RefreshCcw className="w-2.5 h-2.5 animate-spin" /> : <Copy className="w-2.5 h-2.5" />)}
+              <span className="text-[7px] font-bold uppercase">{exporting ? 'SYNC...' : (copied ? 'COPIED' : 'COPY')}</span>
+            </button>
+            
+            {type === 'series' && (
+              <>
+                <button 
+                  onClick={handleDownload}
+                  disabled={exporting}
+                  className="flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all disabled:opacity-50"
+                >
+                  {exporting ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <Download className="w-2.5 h-2.5" />}
+                  <span className="text-[7px] font-bold uppercase">{exporting ? 'SYNC...' : 'DUMP'}</span>
+                </button>
+                <button 
+                  onClick={handleViewM3U}
+                  disabled={exporting}
+                  className="col-span-2 flex items-center justify-center gap-1.5 py-1.5 px-1 mt-0.5 border border-[#00FF00]/40 hover:bg-[#00FF00] hover:text-black transition-all disabled:opacity-50"
+                >
+                  {exporting ? <Loader2 className="w-2.5 h-2.5 animate-spin" /> : <ExternalLink className="w-2.5 h-2.5" />}
+                  <span className="text-[7.5px] font-black tracking-widest uppercase truncate">EXTRACT_EPISODES</span>
+                </button>
+              </>
+            )}
+
+            <button 
+              onClick={handleCopyPoster}
+              className="col-span-2 flex items-center justify-center gap-1 py-1 border border-dashed border-[#00FF00]/20 hover:border-[#00FF00] hover:bg-[#00FF00]/5 transition-all text-[6.5px]"
+            >
+              <ImageIcon className="w-2 h-2" />
+              <span className="font-black tracking-widest uppercase truncate">Copy_Poster_URL</span>
+            </button>
+          </div>
         )}
       </div>
       
       {/* Corner Badges */}
-      <div className="absolute top-2 left-2 z-20 flex flex-col gap-1 items-start">
-         <div className={`text-[7px] px-1 py-0.5 border ${type === 'movie' ? 'border-[#00FF00] text-[#00FF00]' : 'border-blue-400 text-blue-400'} font-black uppercase bg-black/80 flex items-center gap-1`}>
-           {type === 'movie' ? <Film className="w-2 h-2" /> : <Tv className="w-2 h-2" />}
-           {type}
-         </div>
+      <div className="absolute top-2 left-2 z-20 flex flex-col gap-1 items-start group-hover:opacity-0 transition-opacity duration-300">
          <div className="text-[6px] px-1 py-0.5 border border-white/20 text-white/60 font-black uppercase bg-black/80 max-w-[80px] truncate shadow-sm">
            {categoryName}
          </div>
