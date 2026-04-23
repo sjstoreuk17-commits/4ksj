@@ -121,6 +121,7 @@ export default function App() {
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedSeries, setSelectedSeries] = useState<Map<number, XtreamSeries>>(new Map());
   const [episodeRegistry, setEpisodeRegistry] = useState<Map<number, number>>(new Map());
+  const [iconRegistry, setIconRegistry] = useState<Map<number, string>>(new Map());
   const [showMergerModal, setShowMergerModal] = useState(false);
 
   // Persistence Tracker State
@@ -1164,6 +1165,8 @@ export default function App() {
                                 categories={vodCats}
                                 episodeRegistry={episodeRegistry}
                                 setEpisodeRegistry={setEpisodeRegistry}
+                                iconRegistry={iconRegistry}
+                                setIconRegistry={setIconRegistry}
                                 isM3UMode={isM3UMode}
                               />
                             </React.Fragment>
@@ -1198,6 +1201,8 @@ export default function App() {
                                 categories={seriesCats}
                                 episodeRegistry={episodeRegistry}
                                 setEpisodeRegistry={setEpisodeRegistry}
+                                iconRegistry={iconRegistry}
+                                setIconRegistry={setIconRegistry}
                                 onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
                                 isM3UMode={isM3UMode}
                               />
@@ -1318,6 +1323,8 @@ export default function App() {
                                     categories={currentView === 'movies' ? vodCats : seriesCats}
                                     episodeRegistry={episodeRegistry}
                                     setEpisodeRegistry={setEpisodeRegistry}
+                                    iconRegistry={iconRegistry}
+                                    setIconRegistry={setIconRegistry}
                                     onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
                                     isM3UMode={isM3UMode}
                                     isSelectionMode={selectionMode}
@@ -1457,6 +1464,7 @@ export default function App() {
             type={currentView === 'movies' ? 'movie' : 'series'}
             xtream={xtream!}
             episodeRegistry={episodeRegistry}
+            iconRegistry={iconRegistry}
             categories={currentView === 'movies' ? vodCats : seriesCats}
             onClose={() => setShowMergerModal(false)}
             addLog={addLog}
@@ -1872,6 +1880,7 @@ const BulkExporterModal = ({
   type,
   xtream, 
   episodeRegistry,
+  iconRegistry,
   categories,
   onClose, 
   addLog, 
@@ -1881,6 +1890,7 @@ const BulkExporterModal = ({
   type: 'movie' | 'series',
   xtream: XtreamService, 
   episodeRegistry: Map<number, number>,
+  iconRegistry: Map<number, string>,
   categories: XtreamCategory[],
   onClose: () => void, 
   addLog: (m: string) => void,
@@ -1900,10 +1910,13 @@ const BulkExporterModal = ({
         const enrichedItems = selectedItems.map(item => {
           const sid = item.series_id || item.stream_id;
           const regCount = episodeRegistry.get(Number(sid));
-          const cat = categories.find(c => c.category_id === item.category_id);
+          const cachedIcon = iconRegistry.get(Number(sid));
+          const cat = categories.find(c => String(c.category_id) === String(item.category_id));
           
           return { 
             ...item, 
+            cover: cachedIcon || item.cover,
+            stream_icon: cachedIcon || item.stream_icon,
             final_episode_count: regCount,
             total_episodes: regCount,
             category_name: cat ? cat.category_name : ''
@@ -2232,6 +2245,8 @@ const ContentCard = ({
   categories, 
   episodeRegistry,
   setEpisodeRegistry,
+  iconRegistry,
+  setIconRegistry,
   onOpenSeries, 
   isM3UMode,
   isSelectionMode,
@@ -2245,6 +2260,8 @@ const ContentCard = ({
   categories: XtreamCategory[], 
   episodeRegistry: Map<number, number>,
   setEpisodeRegistry: React.Dispatch<React.SetStateAction<Map<number, number>>>,
+  iconRegistry?: Map<number, string>,
+  setIconRegistry?: React.Dispatch<React.SetStateAction<Map<number, string>>>,
   onOpenSeries?: (s: XtreamSeries) => void,
   isM3UMode?: boolean,
   isSelectionMode?: boolean,
@@ -2264,6 +2281,16 @@ const ContentCard = ({
   const initialIcon = movie.stream_icon || movie.movie_image || movie.icon || movie.cover || (type === 'series' ? (item as XtreamSeries).cover : '');
   const [icon, setIcon] = useState(initialIcon);
   const id = 'stream_id' in item ? item.stream_id : item.series_id;
+  const numId = Number(id);
+
+  // Sync with registry on mount
+  useEffect(() => {
+    const cached = iconRegistry?.get(numId);
+    if (cached && cached !== icon) {
+      setIcon(cached);
+    }
+  }, [numId, iconRegistry]);
+
   const extension = 'container_extension' in item ? item.container_extension : 'mp4';
   const categoryName = categories.find(c => c.category_id === item.category_id)?.category_name || 'UNKNOWN_SECTOR';
 
@@ -2337,7 +2364,10 @@ const ContentCard = ({
             xtream.getVodInfo(streamId).then(info => {
               // Priority for icon
               const fetchedIcon = info.movie_data?.movie_image || info.info?.movie_image || info.movie_data?.stream_icon || info.info?.stream_icon;
-              if (fetchedIcon && !icon) setIcon(fetchedIcon);
+              if (fetchedIcon && !icon) {
+                setIcon(fetchedIcon);
+                setIconRegistry?.(prev => new Map(prev).set(numId, fetchedIcon));
+              }
 
               // Priority for duration
               const fetchedDur = info.movie_data?.duration || info.info?.duration || info.duration;

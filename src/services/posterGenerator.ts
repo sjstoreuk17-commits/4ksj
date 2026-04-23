@@ -59,74 +59,85 @@ export class PosterGenerator {
         const x = horizontalMargin + col * (posterWidth + padding);
         const y = verticalMarginTop + row * (posterHeight + padding);
         
-        const itemName = (item.name || item.title || 'UNKNOWN').toString().trim();
+        // Robust Metadata Extraction
+        const itemName = (item.name || item.title || item.stream_name || item.displayName || 'UNKNOWN_ITEM').toString().trim();
         const itemCategory = (item.category_name || '').toString().trim();
+        const rawUrl = item.cover || item.stream_icon || item.movie_image || item.icon || item.thumbnail || '';
 
-        onProgress?.(`PROCESSING ITEM: ${itemName}...`);
+        onProgress?.(`EXPORTING: ${itemName.substring(0, 20)}...`);
 
-        // Poster Box (Skeleton)
-        ctx.fillStyle = '#111827';
+        // 1. Poster Container (Skeleton)
+        ctx.fillStyle = '#0f172a'; // Deep slate base
         this.roundRect(ctx, x, y, posterWidth, posterHeight, 15);
         ctx.fill();
 
         try {
-            const rawUrl = item.cover || item.stream_icon || item.movie_image || '';
             if (rawUrl && rawUrl.startsWith('http')) {
+                // Primary Proxy: Weserv (Resized & CORS handled)
                 const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&w=600&h=900&fit=cover&output=jpg&q=95`;
-                const img = await this.loadImage(proxyUrl);
+                
+                let img: HTMLImageElement;
+                try {
+                    img = await this.loadImage(proxyUrl);
+                } catch (e) {
+                    // Fallback to direct URL if Proxy fails
+                    onProgress?.(`IMAGE_PROXY_FAIL: [${itemName.substring(0, 15)}]...`);
+                    img = await this.loadImage(rawUrl);
+                }
 
-                // DRAW POSTER (Cover logic)
+                // DRAW POSTER
                 ctx.save();
                 this.roundRect(ctx, x, y, posterWidth, posterHeight, 15);
                 ctx.clip();
                 ctx.drawImage(img, x, y, posterWidth, posterHeight);
-
-                // 4. OVERLAY GRADIENT (Readability)
-                const overlayGrd = ctx.createLinearGradient(x, y + posterHeight * 0.4, x, y + posterHeight);
-                overlayGrd.addColorStop(0, 'transparent');
-                overlayGrd.addColorStop(0.7, 'rgba(0,0,0,0.85)');
-                overlayGrd.addColorStop(1, 'rgba(0,0,0,1)');
-                ctx.fillStyle = overlayGrd;
-                ctx.fillRect(x, y + posterHeight * 0.4, posterWidth, posterHeight * 0.6);
-
-                // 5. TEXT OVERLAYS
-                ctx.textAlign = 'center';
-                
-                // --- CATEGORY BADGE (Small & Elegant) ---
-                if (itemCategory) {
-                    ctx.font = '800 24px "Inter", sans-serif';
-                    ctx.fillStyle = '#6366f1'; // Accented Indigo
-                    ctx.letterSpacing = '2px';
-                    ctx.fillText(itemCategory.toUpperCase(), x + posterWidth / 2, y + posterHeight - 110);
-                }
-
-                // --- TITLE (Bold & Clean) ---
-                ctx.font = 'bold 38px "Inter", sans-serif';
-                ctx.fillStyle = '#ffffff';
-                ctx.letterSpacing = '1px';
-                // Wrap text if needed inside the poster
-                this.wrapText(ctx, itemName.toUpperCase(), x + posterWidth / 2, y + posterHeight - 70, posterWidth - 40, 44, 2);
-
                 ctx.restore();
-
-                // Advanced Mirror Highlight (Top Edge)
-                ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-                ctx.lineWidth = 1;
-                this.roundRect(ctx, x, y, posterWidth, posterHeight, 15);
-                ctx.stroke();
-
             } else {
-                throw new Error('Invalid URL');
+                throw new Error('NO_VALID_URL');
             }
         } catch (err) {
-            ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 30px Inter';
+            // Draw a subtle placeholder icon since image failed
+            ctx.fillStyle = 'rgba(255,255,255,0.03)';
             ctx.textAlign = 'center';
-            ctx.fillText('N/A', x + posterWidth/2, y + posterHeight/2);
+            ctx.font = 'bold 80px "Inter"';
+            ctx.fillText('?', x + posterWidth/2, y + posterHeight/2);
         }
+
+        // 2. GRADIENT OVERLAY (Always applied for text readability)
+        const overlayGrd = ctx.createLinearGradient(x, y + posterHeight * 0.4, x, y + posterHeight);
+        overlayGrd.addColorStop(0, 'transparent');
+        overlayGrd.addColorStop(0.7, 'rgba(0,0,0,0.85)');
+        overlayGrd.addColorStop(1, 'rgba(0,0,0,1)');
+        ctx.fillStyle = overlayGrd;
+        ctx.fillRect(x, y + posterHeight * 0.4, posterWidth, posterHeight * 0.6);
+
+        // 3. TEXT LAYERING (Always applied)
+        ctx.textAlign = 'center';
+        
+        // --- CATEGORY BADGE ---
+        if (itemCategory) {
+            ctx.font = '800 24px "Inter", sans-serif';
+            ctx.fillStyle = '#6366f1'; 
+            this.wrapText(ctx, itemCategory.toUpperCase(), x + posterWidth / 2, y + posterHeight - 125, posterWidth - 60, 28, 2);
+        }
+
+        // --- TITLE ---
+        ctx.font = 'bold 38px "Inter", sans-serif';
+        ctx.fillStyle = '#ffffff';
+        this.wrapText(ctx, itemName.toUpperCase(), x + posterWidth / 2, y + posterHeight - 65, posterWidth - 40, 44, 2);
+
+        // 4. BORDER HIGHLIGHT
+        ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+        ctx.lineWidth = 1;
+        this.roundRect(ctx, x, y, posterWidth, posterHeight, 15);
+        ctx.stroke();
     }
 
-    return canvas.toDataURL('image/jpeg', 0.95);
+    try {
+        return canvas.toDataURL('image/jpeg', 0.95);
+    } catch (e) {
+        onProgress?.("EXPORT_SECURITY_BLOCK: SOME_POSTERS_RESTRICTED");
+        throw new Error("POSTER_SECURITY_CONSTRAINT: Some images have security restrictions that blocked the high-quality export. This usually happens with localized IPTV posters. Try selecting different items.");
+    }
   }
 
   private static loadImage(url: string): Promise<HTMLImageElement> {
