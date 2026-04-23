@@ -1457,6 +1457,7 @@ export default function App() {
             type={currentView === 'movies' ? 'movie' : 'series'}
             xtream={xtream!}
             episodeRegistry={episodeRegistry}
+            categories={currentView === 'movies' ? vodCats : seriesCats}
             onClose={() => setShowMergerModal(false)}
             addLog={addLog}
             onComplete={() => {
@@ -1871,6 +1872,7 @@ const BulkExporterModal = ({
   type,
   xtream, 
   episodeRegistry,
+  categories,
   onClose, 
   addLog, 
   onComplete 
@@ -1879,6 +1881,7 @@ const BulkExporterModal = ({
   type: 'movie' | 'series',
   xtream: XtreamService, 
   episodeRegistry: Map<number, number>,
+  categories: XtreamCategory[],
   onClose: () => void, 
   addLog: (m: string) => void,
   onComplete: () => void
@@ -1893,18 +1896,18 @@ const BulkExporterModal = ({
       if (mode === 'frame') {
         addLog("POSTER_FRAME: FETCHING METADATA SYNC...");
         
-        // Sync enriched metadata from registry into the items being passed to generator
+        // Sync enriched metadata from registry and category list into the items being passed to generator
         const enrichedItems = selectedItems.map(item => {
           const sid = item.series_id || item.stream_id;
           const regCount = episodeRegistry.get(Number(sid));
-          if (regCount) {
-            return { 
-              ...item, 
-              final_episode_count: regCount,
-              total_episodes: regCount // Explicitly override
-            };
-          }
-          return item;
+          const cat = categories.find(c => c.category_id === item.category_id);
+          
+          return { 
+            ...item, 
+            final_episode_count: regCount,
+            total_episodes: regCount,
+            category_name: cat ? cat.category_name : ''
+          };
         });
 
         addLog("POSTER_FRAME: GENERATING LUXURY COLLAGE...");

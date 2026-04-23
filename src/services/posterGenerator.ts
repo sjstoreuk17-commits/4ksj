@@ -1,5 +1,3 @@
-import { XtreamSeries, XtreamStream } from '../types';
-
 export class PosterGenerator {
   static async generateCollage(
     items: (any)[], 
@@ -10,210 +8,125 @@ export class PosterGenerator {
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas context not available');
 
-    // Configuration for the 2:3 Aspect Ratio (Portrait)
-    const targetWidth = 2000;
-    const targetHeight = 3000; // 2:3 Ratio (2000 * 1.5)
-    
-    canvas.width = targetWidth;
-    canvas.height = targetHeight;
-
-    const columns = items.length <= 3 ? 2 : (items.length <= 8 ? 3 : 4);
+    // CONFIGURATION
+    const columns = 4; // Standard OTT grid width
     const rows = Math.ceil(items.length / columns);
-    
-    // Dynamic Scaling to fit the 2:3 frame
-    const padding = 80;
-    const headerHeight = 280;
-    const footerSpace = 100;
-    
-    const availableWidth = targetWidth - (padding * 2);
-    const availableHeight = targetHeight - headerHeight - footerSpace - (padding * 2);
-    
-    const posterWidth = (availableWidth - (columns - 1) * padding) / columns;
-    const posterHeight = posterWidth * 1.5; // Maintain 2:3 for individual posters too
-    const textSpace = 140;
+    const posterWidth = 480; // Large fixed width for high quality
+    const posterHeight = 720; // Exact 2:3 Ratio
+    const padding = 20; // Minimal grid gap for "Edge-to-Edge" feel
+    const horizontalMargin = 60;
+    const verticalMarginTop = 220; // Space for Header
+    const verticalMarginBottom = 100;
 
-    // Total content height to check if we need to scale down
-    const rowHeight = posterHeight + textSpace + padding;
-    const totalContentHeight = rows * rowHeight;
-    
-    let scale = 1;
-    if (totalContentHeight > availableHeight) {
-        scale = availableHeight / totalContentHeight;
-    }
+    // DYNAMIC CANVAS SCALING
+    // We calculate height based on rows so posters NEVER shrink
+    canvas.width = (posterWidth * columns) + (padding * (columns - 1)) + (horizontalMargin * 2);
+    canvas.height = (posterHeight * rows) + (padding * (rows - 1)) + verticalMarginTop + verticalMarginBottom;
 
-    const finalPosterWidth = posterWidth * scale;
-    const finalPosterHeight = posterHeight * scale;
-    const finalTextSpace = textSpace * scale;
-    const finalPadding = padding * scale;
-
-    // Gradient Background - Cinematic Mesh Style
+    // 1. BACKGROUND: Deep Cinema Navy
     const bgGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    bgGradient.addColorStop(0, '#020617'); // slate-950
-    bgGradient.addColorStop(0.5, '#0f172a'); // slate-900
+    bgGradient.addColorStop(0, '#020617'); 
+    bgGradient.addColorStop(0.5, '#01040a'); 
     bgGradient.addColorStop(1, '#020617'); 
     ctx.fillStyle = bgGradient;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Subtle Mesh Glows (Cinematic Depth)
-    const drawGlow = (gx: number, gy: number, color: string) => {
-        const grd = ctx.createRadialGradient(gx, gy, 0, gx, gy, 800);
-        grd.addColorStop(0, color);
-        grd.addColorStop(1, 'transparent');
-        ctx.fillStyle = grd;
-        ctx.globalCompositeOperation = 'screen';
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
-        ctx.globalCompositeOperation = 'source-over';
-    };
-    drawGlow(0, 0, 'rgba(30, 58, 138, 0.2)'); 
-    drawGlow(canvas.width, canvas.height, 'rgba(79, 70, 229, 0.1)');
-
-    // Draw Header
-    ctx.fillStyle = 'rgba(255,255,255,0.03)';
-    ctx.fillRect(0, 0, canvas.width, headerHeight);
+    // 2. HEADER: Dynamic & Elegant
+    ctx.fillStyle = 'rgba(255,255,255,0.02)';
+    ctx.fillRect(0, 0, canvas.width, verticalMarginTop - 20);
     
-    // Header Accent Line
-    ctx.fillStyle = '#6366f1'; 
-    ctx.fillRect(canvas.width/4, headerHeight - 3, canvas.width/2, 3);
-
+    const headerTitle = type === 'series' 
+      ? 'RECENTLY ADDED WEB SERIES' 
+      : 'RECENTLY ADDED MOVIES';
+    
+    ctx.font = 'bold 90px "Inter", sans-serif';
     ctx.fillStyle = '#ffffff';
-    ctx.font = 'bold 80px "Inter", sans-serif'; 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.letterSpacing = '6px';
-    const headerTitle = type === 'series' 
-      ? 'RECENTLY ADDED WEB SERIES ON OUR SERVER' 
-      : 'RECENTLY ADDED MOVIES ON OUR SERVER';
-    ctx.fillText(headerTitle, canvas.width / 2, headerHeight / 2);
-    
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = 'rgba(255,255,255,0.1)';
-    ctx.beginPath();
-    ctx.moveTo(padding, headerHeight);
-    ctx.lineTo(canvas.width - padding, headerHeight);
-    ctx.stroke();
+    ctx.letterSpacing = '5px';
+    ctx.fillText(headerTitle.toUpperCase(), canvas.width / 2, (verticalMarginTop - 20) / 2);
 
-    const borderRadius = 20;
+    // Header Accent Line
+    ctx.fillStyle = '#6366f1'; 
+    ctx.fillRect(canvas.width/3, verticalMarginTop - 40, canvas.width/3, 5);
 
-    // Load and Draw Posters
+    // 3. RENDER POSTERS
     for (let i = 0; i < items.length; i++) {
         const item = items[i];
         const col = i % columns;
         const row = Math.floor(i / columns);
         
-        // --- CENTERING LOGIC FOR EACH ROW ---
-        const itemsInThisRow = Math.min(columns, items.length - row * columns);
-        const rowWidth = itemsInThisRow * finalPosterWidth + (itemsInThisRow - 1) * finalPadding;
-        const rowStartX = (canvas.width - rowWidth) / 2;
+        const x = horizontalMargin + col * (posterWidth + padding);
+        const y = verticalMarginTop + row * (posterHeight + padding);
         
-        const x = rowStartX + col * (finalPosterWidth + finalPadding);
-        const y = headerHeight + finalPadding + row * (finalPosterHeight + finalTextSpace + finalPadding);
-        const itemName = (item.name || 'UNKNOWN').toString().trim();
+        const itemName = (item.name || item.title || 'UNKNOWN').toString().trim();
+        const itemCategory = (item.category_name || '').toString().trim();
 
-        onProgress?.(`SYNCHRONIZING: ${itemName}...`);
+        onProgress?.(`PROCESSING ITEM: ${itemName}...`);
 
-        // Metadata Calculation - Super Robust logic to avoid ID mixup
-        let meta = '';
-        if (type === 'series') {
-            // Priority 1: final_episode_count (passed from App.tsx registry)
-            // Priority 2: Standard fields, filtered to avoid IDs
-            const countFromFields = [
-                (item as any).final_episode_count,
-                item.num_episodes, 
-                item.total_episodes, 
-                item.episode_count, 
-                item.total_eps, 
-                item.episodes_count,
-            ].map(v => parseInt(v)).filter(v => !isNaN(v) && v > 0 && v < 10000);
-
-            const count = countFromFields.length > 0 ? countFromFields[0] : null;
-            meta = count ? `${count} EPISODES` : 'SERIES_DATA_PENDING';
-        } else {
-            meta = (item as any).genre || (item as any).category_name || (item as any).releaseDate || 'ULTRA_HD_FEATURE';
-        }
-
-        // Cinematic Background Glow for Posters
-        const glowGrd = ctx.createRadialGradient(x + finalPosterWidth/2, y + finalPosterHeight/2, 0, x + finalPosterWidth/2, y + finalPosterHeight/2, finalPosterHeight);
-        glowGrd.addColorStop(0, 'rgba(255, 255, 255, 0.05)');
-        glowGrd.addColorStop(1, 'transparent');
-        ctx.fillStyle = glowGrd;
-        ctx.fillRect(x - finalPosterWidth/2, y - finalPosterHeight/2, finalPosterWidth * 2, finalPosterHeight * 2);
-
-        // Draw Poster Box Background (Placeholder)
-        ctx.fillStyle = '#0a0a0a'; 
-        this.roundRect(ctx, x, y, finalPosterWidth, finalPosterHeight, borderRadius);
+        // Poster Box (Skeleton)
+        ctx.fillStyle = '#111827';
+        this.roundRect(ctx, x, y, posterWidth, posterHeight, 15);
         ctx.fill();
 
         try {
             const rawUrl = item.cover || item.stream_icon || item.movie_image || '';
             if (rawUrl && rawUrl.startsWith('http')) {
-                const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&w=600&h=900&fit=cover&output=jpg&q=90&errorRedirect=https://placehold.co/600x900/1e293b/ffffff?text=NO_IMAGE`;
+                const proxyUrl = `https://images.weserv.nl/?url=${encodeURIComponent(rawUrl)}&w=600&h=900&fit=cover&output=jpg&q=95`;
                 const img = await this.loadImage(proxyUrl);
 
-                // Premium Shadows & Glow
+                // DRAW POSTER (Cover logic)
                 ctx.save();
-                ctx.shadowColor = 'rgba(0,0,0,1)';
-                ctx.shadowBlur = 60;
-                ctx.shadowOffsetY = 40;
-
-                // Border Highlight
-                this.roundRect(ctx, x, y, finalPosterWidth, finalPosterHeight, borderRadius);
+                this.roundRect(ctx, x, y, posterWidth, posterHeight, 15);
                 ctx.clip();
-                ctx.drawImage(img, x, y, finalPosterWidth, finalPosterHeight);
-                
-                // Netflix Layer: Dark gradient on poster bottom
-                const overlayGrd = ctx.createLinearGradient(x, y + finalPosterHeight * 0.6, x, y + finalPosterHeight);
+                ctx.drawImage(img, x, y, posterWidth, posterHeight);
+
+                // 4. OVERLAY GRADIENT (Readability)
+                const overlayGrd = ctx.createLinearGradient(x, y + posterHeight * 0.4, x, y + posterHeight);
                 overlayGrd.addColorStop(0, 'transparent');
-                overlayGrd.addColorStop(1, 'rgba(0,0,0,0.9)');
+                overlayGrd.addColorStop(0.7, 'rgba(0,0,0,0.85)');
+                overlayGrd.addColorStop(1, 'rgba(0,0,0,1)');
                 ctx.fillStyle = overlayGrd;
-                ctx.fillRect(x, y + finalPosterHeight * 0.6, finalPosterWidth, finalPosterHeight * 0.4);
+                ctx.fillRect(x, y + posterHeight * 0.4, posterWidth, posterHeight * 0.6);
+
+                // 5. TEXT OVERLAYS
+                ctx.textAlign = 'center';
                 
+                // --- CATEGORY BADGE (Small & Elegant) ---
+                if (itemCategory) {
+                    ctx.font = '800 24px "Inter", sans-serif';
+                    ctx.fillStyle = '#6366f1'; // Accented Indigo
+                    ctx.letterSpacing = '2px';
+                    ctx.fillText(itemCategory.toUpperCase(), x + posterWidth / 2, y + posterHeight - 110);
+                }
+
+                // --- TITLE (Bold & Clean) ---
+                ctx.font = 'bold 38px "Inter", sans-serif';
+                ctx.fillStyle = '#ffffff';
+                ctx.letterSpacing = '1px';
+                // Wrap text if needed inside the poster
+                this.wrapText(ctx, itemName.toUpperCase(), x + posterWidth / 2, y + posterHeight - 70, posterWidth - 40, 44, 2);
+
                 ctx.restore();
 
-                // Outer Frame Glow (Subtle)
-                ctx.strokeStyle = 'rgba(255,255,255,0.2)';
-                ctx.lineWidth = 2;
-                this.roundRect(ctx, x, y, finalPosterWidth, finalPosterHeight, borderRadius);
+                // Advanced Mirror Highlight (Top Edge)
+                ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+                ctx.lineWidth = 1;
+                this.roundRect(ctx, x, y, posterWidth, posterHeight, 15);
                 ctx.stroke();
+
             } else {
-                throw new Error('No valid URL');
+                throw new Error('Invalid URL');
             }
         } catch (err) {
             ctx.fillStyle = '#ffffff';
-            ctx.font = 'bold 36px Inter, sans-serif';
+            ctx.font = 'bold 30px Inter';
             ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText('NO POSTER DATA', x + finalPosterWidth/2, y + finalPosterHeight/2);
+            ctx.fillText('N/A', x + posterWidth/2, y + posterHeight/2);
         }
-
-        // --- CINEMATIC TEXT DESIGN ---
-        ctx.shadowBlur = 0;
-        ctx.shadowOffsetY = 0;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'top';
-
-        const textXOffset = x + finalPosterWidth / 2;
-        
-        // Premium Title Stack
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 44px Inter, sans-serif';
-        // Add subtle text shadow for clarity
-        ctx.shadowColor = 'rgba(0,0,0,0.5)';
-        ctx.shadowBlur = 6;
-        this.wrapText(ctx, itemName.toUpperCase(), textXOffset, y + finalPosterHeight + 35, finalPosterWidth, 52);
-
-        // Metadata: Netflix/Prime style Badge font
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#f43f5e'; // Vibrant Rose/Red like Netflix UI
-        ctx.font = '900 30px "Inter", sans-serif';
-        ctx.letterSpacing = '2px';
-        ctx.fillText(meta.toUpperCase(), textXOffset, y + finalPosterHeight + 145);
-        
-        // Minimalist Divider Line
-        ctx.fillStyle = 'rgba(244, 63, 94, 0.5)';
-        ctx.fillRect(textXOffset - 60, y + finalPosterHeight + 195, 120, 3);
     }
 
-    return canvas.toDataURL('image/jpeg', 0.9);
+    return canvas.toDataURL('image/jpeg', 0.95);
   }
 
   private static loadImage(url: string): Promise<HTMLImageElement> {
@@ -227,8 +140,6 @@ export class PosterGenerator {
   }
 
   private static roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-    if (w < 2 * r) r = w / 2;
-    if (h < 2 * r) r = h / 2;
     ctx.beginPath();
     ctx.moveTo(x + r, y);
     ctx.arcTo(x + w, y, x + w, y + h, r);
@@ -238,24 +149,27 @@ export class PosterGenerator {
     ctx.closePath();
   }
 
-  private static wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number) {
+  private static wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number, maxLines: number = 2) {
     const words = text.split(' ');
     let line = '';
     let testY = y;
+    let linesDrawn = 0;
 
     for (let n = 0; n < words.length; n++) {
       let testLine = line + words[n] + ' ';
       let metrics = ctx.measureText(testLine);
-      let testWidth = metrics.width;
-      if (testWidth > maxWidth && n > 0) {
+      if (metrics.width > maxWidth && n > 0) {
         ctx.fillText(line, x, testY);
         line = words[n] + ' ';
         testY += lineHeight;
-        if (testY > y + lineHeight) break; // Hard limit 2 lines
+        linesDrawn++;
+        if (linesDrawn >= maxLines) break;
       } else {
         line = testLine;
       }
     }
-    ctx.fillText(line, x, testY);
+    if (linesDrawn < maxLines) {
+        ctx.fillText(line, x, testY);
+    }
   }
 }
