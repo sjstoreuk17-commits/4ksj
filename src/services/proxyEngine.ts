@@ -34,36 +34,56 @@ export async function fetchApiData(url: string, useCache: boolean = true): Promi
     }
   }
 
-  const encodedUrl = encodeTargetUrl(url);
+  // Auto-upgrade insecure URLs if current page is secure
+  let targetUrl = url;
+  if (window.location.protocol === 'https:' && targetUrl.startsWith('http:')) {
+    // If it has port 80, remove it when upgrading to https
+    targetUrl = url.replace('http:', 'https:').replace(':80', '');
+  }
+
+  const encodedUrl = encodeTargetUrl(targetUrl);
   const fallbacks = [
-    // Step 1: Direct (Might fail CORS in browser, but following request)
-    async () => {
-      console.log('[PROXY] Attempting Direct Fetch...');
-      const response = await fetch(url);
+    // Step 1: Direct (Might fail CORS or Protocol in browser)
+    async (u: string) => {
+      console.log('[PROXY] Attempting Direct Fetch...', u);
+      const response = await fetch(u);
       if (!response.ok) throw new Error('Direct fetch failed');
       const text = await response.text();
       try { return JSON.parse(text); } catch (e) { return text; }
     },
+    // Step 1.1: Direct Original (if upgrade was attempted)
+    ...(targetUrl !== url ? [
+      async (u: string) => {
+        console.log('[PROXY] Attempting Direct Original Fetch...', url);
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Direct Original fetch failed');
+        const text = await response.text();
+        try { return JSON.parse(text); } catch (e) { return text; }
+      }
+    ] : []),
     // Step 2: CodeTabs Proxy
-    async () => {
+    async (u: string) => {
       console.log('[PROXY] Attempting CodeTabs...');
-      const response = await fetch(`https://api.codetabs.com/v1/proxy/?quest=${encodedUrl}`);
+      const encoded = encodeTargetUrl(u);
+      const response = await fetch(`https://api.codetabs.com/v1/proxy/?quest=${encoded}`);
       if (!response.ok) throw new Error('CodeTabs failed');
       const text = await response.text();
       try { return JSON.parse(text); } catch (e) { return text; }
     },
     // Step 3: AllOrigins Proxy
-    async () => {
+    async (u: string) => {
       console.log('[PROXY] Attempting AllOrigins...');
-      const response = await fetch(`https://api.allorigins.win/raw?url=${encodedUrl}`);
+      const encoded = encodeTargetUrl(u);
+      const response = await fetch(`https://api.allorigins.win/raw?url=${encoded}`);
       if (!response.ok) throw new Error('AllOrigins failed');
       const text = await response.text();
       try { return JSON.parse(text); } catch (e) { return text; }
     },
     // Step 4: CORSProxy.io
-    async () => {
+    async (u: string) => {
       console.log('[PROXY] Attempting CORSProxy.io...');
-      const response = await fetch(`https://corsproxy.io/?${encodedUrl}`);
+      const encoded = encodeTargetUrl(u);
+      const response = await fetch(`https://corsproxy.io/?${encoded}`);
       if (!response.ok) throw new Error('CORSProxy.io failed');
       const text = await response.text();
       try { return JSON.parse(text); } catch (e) { return text; }
@@ -71,32 +91,37 @@ export async function fetchApiData(url: string, useCache: boolean = true): Promi
   ];
 
   let lastError: any = null;
-  for (const attempt of fallbacks) {
-    try {
-      const data = await attempt();
-      
-      // If it's a string (M3U), don't try to parse as JSON if it's already a string
-      let processedData = data;
-      if (typeof data === 'string') {
-        try {
-          processedData = JSON.parse(data);
-        } catch (e) {
-          // Keep as string (likely M3U content)
-        }
-      }
+  // We try each fallback with both the upgraded URL (targetUrl) and the original URL (url) if they differ
+  const targetUrlsToTry = targetUrl !== url ? [targetUrl, url] : [url];
 
-      // Save to Cache
-      if (useCache) {
-        localStorage.setItem(CACHE_PREFIX + url, JSON.stringify({
-          data: processedData,
-          timestamp: Date.now()
-        }));
+  for (const tUrl of targetUrlsToTry) {
+    for (const attempt of fallbacks) {
+      try {
+        const data = await attempt(tUrl);
+        
+        // If it's a string (M3U), don't try to parse as JSON if it's already a string
+        let processedData = data;
+        if (typeof data === 'string') {
+          try {
+            processedData = JSON.parse(data);
+          } catch (e) {
+            // Keep as string (likely M3U content)
+          }
+        }
+
+        // Save to Cache (use original URL as key)
+        if (useCache) {
+          localStorage.setItem(CACHE_PREFIX + url, JSON.stringify({
+            data: processedData,
+            timestamp: Date.now()
+          }));
+        }
+        
+        return processedData;
+      } catch (err) {
+        console.warn(`[PROXY] Attempt for ${tUrl} failed, moving to next...`, err);
+        lastError = err;
       }
-      
-      return processedData;
-    } catch (err) {
-      console.warn('[PROXY] Attempt failed, moving to next...', err);
-      lastError = err;
     }
   }
 

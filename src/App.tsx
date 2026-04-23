@@ -80,13 +80,13 @@ export default function App() {
   });
 
   const [exportAuth] = useState<XtreamAuth>({
-    url: 'http://sjstorestar4k.store:80',
+    url: 'https://sjstorestar4k.store',
     username: 'mXoK4b6xEf',
     password: 'immaculate5visit'
   });
 
   const adminAuth: XtreamAuth = {
-    url: 'http://sjstorestar4k.store:80',
+    url: 'https://sjstorestar4k.store',
     username: '928373838', 
     password: '827338833'
   };
@@ -124,15 +124,12 @@ export default function App() {
   const [iconRegistry, setIconRegistry] = useState<Map<number, string>>(new Map());
   const [showMergerModal, setShowMergerModal] = useState(false);
 
-  // Persistence Tracker State
-  const [trackerActive, setTrackerActive] = useState(false);
-  const [trackerEnabledAt, setTrackerEnabledAt] = useState<number | null>(null);
-  const [fbUser, setFbUser] = useState<any>(null);
-
   const xtream = useMemo(() => {
     if (!isLoggedIn || isM3UMode) return null;
-    return new XtreamService(auth, exportAuth);
-  }, [isLoggedIn, auth, exportAuth, isM3UMode]);
+    // Only use exportAuth override if we are in gateway mode (Admin Root Access)
+    const m3uAuthOverride = authMode === 'gateway' ? exportAuth : undefined;
+    return new XtreamService(auth, m3uAuthOverride);
+  }, [isLoggedIn, auth, exportAuth, isM3UMode, authMode]);
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 30));
@@ -417,57 +414,6 @@ export default function App() {
     });
   };
 
-  // Sync Firebase Tracker
-  useEffect(() => {
-    const unsubscribe = onAuthStateChanged(fbAuth, async (user) => {
-      if (user) {
-        setFbUser(user);
-        const trackerRef = doc(db, 'trackers', user.uid);
-        const snap = await getDoc(trackerRef);
-        if (snap.exists()) {
-          const data = snap.data();
-          setTrackerActive(data.trackerActive);
-          setTrackerEnabledAt(data.activatedAt ? Math.floor(new Date(data.activatedAt).getTime() / 1000) : null);
-        }
-      } else {
-        signInAnonymously(fbAuth).catch(err => {
-          if (err.code === 'auth/admin-restricted-operation') {
-            addLog('ERR: TRACKER_AUTH_DISABLED. ENABLE "ANONYMOUS LOGIN" IN FIREBASE CONSOLE.');
-          } else {
-            console.error("FB Auth Error", err);
-          }
-        });
-      }
-    });
-    return () => unsubscribe();
-  }, [addLog]);
-
-  const toggleTracker = async () => {
-    if (!fbUser) return;
-    const newState = !trackerActive;
-    const now = new Date();
-    
-    try {
-      await setDoc(doc(db, 'trackers', fbUser.uid), {
-        userId: fbUser.uid,
-        trackerActive: newState,
-        activatedAt: newState ? now.toISOString() : (trackerEnabledAt ? new Date(trackerEnabledAt * 1000).toISOString() : null),
-        xtreamUsername: auth.username,
-        lastCheckedAt: now.toISOString()
-      }, { merge: true });
-      
-      setTrackerActive(newState);
-      if (newState) {
-        setTrackerEnabledAt(Math.floor(now.getTime() / 1000));
-        addLog(`NEURAL_TRACKER ACTIVATED: MONITORING STARTED FROM ${now.toLocaleTimeString()}`);
-      } else {
-        addLog('NEURAL_TRACKER DEACTIVATED.');
-      }
-    } catch (e) {
-      addLog('ERR: TRACKER_SYNC_FAILED');
-    }
-  };
-
   const handleLogout = () => {
     setIsLoggedIn(false);
     setAuthMode('gateway');
@@ -499,17 +445,6 @@ export default function App() {
     });
   }, [currentSeries]);
 
-  const newArrivals = useMemo(() => {
-    if (!trackerEnabledAt) return [];
-    const movies = currentStreams.filter(m => Number(m.added) > trackerEnabledAt);
-    const series = currentSeries.filter(s => Number(s.last_modified) > trackerEnabledAt);
-    return [...movies, ...series].sort((a, b) => {
-      const timeA = Number((a as any).added || (a as any).last_modified);
-      const timeB = Number((b as any).added || (b as any).last_modified);
-      return timeB - timeA;
-    });
-  }, [currentStreams, currentSeries, trackerEnabledAt]);
-
   const displayList = useMemo(() => {
     const list = currentView === 'movies' ? currentStreams : currentSeries;
     let items = [...list];
@@ -520,18 +455,16 @@ export default function App() {
       } else {
         items = recentlyAddedSeries;
       }
-    } else if (selectedCategory === 'new_arrivals') {
-      items = newArrivals.filter(item => {
-        if (currentView === 'movies') return (item as any).stream_id;
-        return (item as any).series_id;
-      }) as any;
+    } else if (selectedCategory === 'all') {
+      // Identity mapping for 'all' category
+      items = [...list];
     } else if (selectedCategory) {
       items = list.filter(i => i.category_id === selectedCategory);
     }
 
     const filtered = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
     return filtered.slice(0, renderLimit);
-  }, [currentStreams, currentSeries, currentView, searchQuery, renderLimit, selectedCategory, recentlyAddedMovies, recentlyAddedSeries, newArrivals]);
+  }, [currentStreams, currentSeries, currentView, searchQuery, renderLimit, selectedCategory, recentlyAddedMovies, recentlyAddedSeries]);
 
   const [categorySelection, setCategorySelection] = useState<{ id: string, name: string } | null>(null);
 
@@ -541,15 +474,22 @@ export default function App() {
     setLoading(true);
     
     try {
-      const items = selectedCategory === 'recently_added' ? (currentView === 'movies' ? recentlyAddedMovies : recentlyAddedSeries) : (currentView === 'movies' ? currentStreams.filter(s => s.category_id === catId) : currentSeries.filter(s => s.category_id === catId));
+      const items = selectedCategory === 'recently_added' 
+        ? (currentView === 'movies' ? recentlyAddedMovies : recentlyAddedSeries) 
+        : (selectedCategory === 'all' 
+          ? (currentView === 'movies' ? currentStreams : currentSeries)
+          : (currentView === 'movies' ? currentStreams.filter(s => s.category_id === catId) : currentSeries.filter(s => s.category_id === catId))
+        );
       
       let m3u = "";
       if (isM3UMode) {
         m3u = "#EXTM3U\r\n";
         items.forEach(item => {
           const icon = 'stream_icon' in item ? item.stream_icon : item.cover;
-          const url = (item as any).direct_source;
-          m3u += `#EXTINF:-1 tvg-id="" tvg-name="${item.name}" tvg-logo="${icon}" group-title="${catName}",${item.name}\r\n${url}\r\n`;
+          const url = (item as any).direct_source || '';
+          // Force http for extraction compatibility as requested by user
+          const forcedUrl = url.replace(/https:\/\//g, 'http://');
+          m3u += `#EXTINF:-1 tvg-id="" tvg-name="${item.name}" tvg-logo="${icon}" group-title="${catName}",${item.name}\r\n${forcedUrl}\r\n`;
         });
       } else if (xtream) {
         if (currentView === 'series' && items.length > 0) {
@@ -562,7 +502,10 @@ export default function App() {
       
       if (!m3u) throw new Error("Empty Payload");
 
-      const blob = new Blob([m3u], { type: 'text/plain' });
+      // Final safety check to ensure all links in M3U are http
+      const finalM3u = m3u.replace(/https:\/\//g, 'http://');
+
+      const blob = new Blob([finalM3u], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -580,16 +523,16 @@ export default function App() {
   };
 
   const augmentedVodCats = useMemo(() => [
-    { category_id: 'new_arrivals', category_name: `🔥 NEW SINCE TRACKING (${newArrivals.filter(i => (i as any).stream_id).length})` },
+    { category_id: 'all', category_name: '★ ALL MOVIES' },
     { category_id: 'recently_added', category_name: '★ RECENTLY ADDED 100' },
     ...vodCats
-  ], [vodCats, newArrivals]);
+  ], [vodCats]);
 
   const augmentedSeriesCats = useMemo(() => [
-    { category_id: 'new_arrivals', category_name: `🔥 NEW SINCE TRACKING (${newArrivals.filter(i => (i as any).series_id).length})` },
+    { category_id: 'all', category_name: '★ ALL WEB SERIES' },
     { category_id: 'recently_added', category_name: '★ RECENTLY ADDED 50' },
     ...seriesCats
-  ], [seriesCats, newArrivals]);
+  ], [seriesCats]);
 
   if (!isLoggedIn) {
     return (
@@ -711,7 +654,7 @@ export default function App() {
                         type="url" 
                         value={auth.url} 
                         onChange={e => setAuth({...auth, url: e.target.value})}
-                        placeholder="http://server.url:port"
+                        placeholder="https://server.url:port"
                         className="w-full bg-black/60 border border-[#00FF00]/20 p-3 text-xs outline-none focus:border-[#00FF00] transition-all"
                         required
                       />
@@ -802,7 +745,7 @@ export default function App() {
                         type="url" 
                         value={m3uUrl} 
                         onChange={e => setM3uUrl(e.target.value)}
-                        placeholder="http://iptv.provider/playlist.m3u"
+                        placeholder="https://iptv.provider/playlist.m3u"
                         className="w-full bg-black/60 border border-[#00FF00]/20 p-3 text-xs outline-none focus:border-[#00FF00] transition-all"
                         required
                       />
@@ -909,32 +852,18 @@ export default function App() {
       {/* Top Header */}
       <header className="h-16 border-b border-[#00FF00]/10 px-4 lg:px-6 flex items-center justify-between bg-black/80 backdrop-blur-md sticky top-0 z-50">
         <div className="flex items-center gap-3 lg:gap-4">
-          <Radio 
-            className={`w-5 h-5 lg:w-6 h-6 ${trackerActive ? 'text-[#00FF00] animate-pulse' : 'text-red-500 opacity-50'}`} 
-            onClick={toggleTracker}
-          />
+          <Terminal className="w-5 h-5 lg:w-6 h-6 text-[#00FF00]" />
           <div>
             <h2 className="text-[10px] lg:text-sm font-black uppercase tracking-widest glow-text">NEURAL // COMMAND</h2>
-            <div className="flex items-center gap-2 text-[7px] lg:text-[8px] opacity-40">
-              <span className={`w-1.5 h-1.5 rounded-full ${trackerActive ? 'bg-[#00FF00] animate-ping' : 'bg-red-500'}`} />
-              TRACKER: {trackerActive ? 'ACTIVE' : 'OFFLINE'} | SESSION: {auth.username.toUpperCase()}
+            <div className="flex items-center gap-2 text-[7px] lg:text-[8px] opacity-40 uppercase tracking-widest">
+              SYSTEM: ONLINE | SESSION: {auth.username.toUpperCase()}
             </div>
           </div>
         </div>
 
         <div className="flex items-center gap-4 lg:gap-6">
-          {newArrivals.length > 0 && (
-            <button 
-              onClick={() => { setSelectedCategory('new_arrivals'); setCurrentView( (newArrivals[0] as any).stream_id ? 'movies' : 'series' )}}
-              className="relative p-2 bg-[#00FF00]/10 border border-[#00FF00]/40 text-[#00FF00]"
-            >
-              <Bell className="w-4 h-4 animate-bounce" />
-              <span className="absolute -top-1 -right-1 bg-red-600 text-white text-[8px] px-1 rounded-full animate-pulse">{newArrivals.length}</span>
-            </button>
-          )}
           <div className="hidden lg:flex items-center gap-4 border-l border-[#00FF00]/10 pl-6">
-            <Stat label="SINCE" val={trackerEnabledAt ? new Date(trackerEnabledAt * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A'} />
-            <Stat label="NEW_DRIPS" val={newArrivals.length.toString()} />
+            <Stat label="STATUS" val="CONNECTED" />
             <Stat label="CORE" val="STABLE" />
           </div>
           <button 
@@ -1590,6 +1519,17 @@ const MatrixRain = () => {
 };
 
 const openM3UTextInTab = (m3uContent: string, title: string) => {
+  // Downgrade https for extraction as requested
+  let processed = m3uContent.replace(/https:\/\//g, 'http://');
+  
+  // ONLY inject :80 if it's the specific admin domain and no port is specified
+  processed = processed.replace(/(http:\/\/sjstorestar4k\.store)([^\/\s\r\n]*)?/g, (match, origin, path) => {
+    if (!origin.includes(':', 7) && !(path && path.startsWith(':'))) {
+      return origin + ':80' + (path || '');
+    }
+    return match;
+  });
+
   const html = `
     <!DOCTYPE html>
     <html>
@@ -1814,7 +1754,7 @@ const openM3UTextInTab = (m3uContent: string, title: string) => {
         </div>
 
         <div class="code-wrapper">
-          <pre id="m3u-content">${m3uContent}</pre>
+          <pre id="m3u-content">${processed}</pre>
         </div>
 
         <div class="footer">
@@ -1944,7 +1884,8 @@ const BulkExporterModal = ({
         });
 
         if (mode === 'download') {
-          const blob = new Blob([m3u], { type: 'text/plain' });
+          // Force http for extraction compatibility as requested by user
+          const blob = new Blob([m3u.replace(/https:\/\//g, 'http://')], { type: 'text/plain' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
@@ -1965,7 +1906,8 @@ const BulkExporterModal = ({
         const m3u = await merger.generateMergedM3U("Bulk_Export", items, addLog);
         
         if (mode === 'download') {
-          const blob = new Blob([m3u], { type: 'text/plain' });
+          // Force http for extraction compatibility as requested by user
+          const blob = new Blob([m3u.replace(/https:\/\//g, 'http://')], { type: 'text/plain' });
           const url = URL.createObjectURL(blob);
           const a = document.createElement('a');
           a.href = url;
@@ -2492,7 +2434,7 @@ const ContentCard = ({
         if (!xtream) return;
         const info = await xtream.getSeriesInfo((item as XtreamSeries).series_id);
         const allEpisodes = Object.values(info.episodes).flat();
-        const m3u = xtream.generateSeriesM3U(name, icon, allEpisodes);
+        const m3u = xtream.generateSeriesM3U(name, icon, allEpisodes).replace(/https:\/\//g, 'http://');
         
         const blob = new Blob([m3u], { type: 'text/plain' });
         const url = URL.createObjectURL(blob);
@@ -2508,7 +2450,7 @@ const ContentCard = ({
         setExporting(false);
       }
     } else {
-      const m3u = `#EXTM3U\r\n#EXTINF:-1 tvg-id="" tvg-name="${name}" tvg-logo="${icon}" group-title="${categoryName}",${name}\r\n${streamUrl}\r\n`;
+      const m3u = `#EXTM3U\r\n#EXTINF:-1 tvg-id="" tvg-name="${name}" tvg-logo="${icon}" group-title="${categoryName}",${name}\r\n${streamUrl.replace(/https:\/\//g, 'http://')}\r\n`;
       const blob = new Blob([m3u], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');

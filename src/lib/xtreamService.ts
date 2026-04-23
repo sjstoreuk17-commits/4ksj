@@ -70,10 +70,43 @@ export class XtreamService {
     return this.fetchAction<any>('get_vod_info', { vod_id: vodId });
   }
 
+  private forceHttp(url: string, forcePort80: boolean = false): string {
+    let processed = url;
+    if (processed.startsWith('https:')) {
+      processed = processed.replace('https:', 'http:');
+    }
+    
+    // Add port 80 ONLY if requested (for admin domain) and no port is specified
+    if (forcePort80) {
+      try {
+        const urlObj = new URL(processed);
+        if (!urlObj.port && urlObj.protocol === 'http:') {
+          const protocolEnd = processed.indexOf('://') + 3;
+          const firstSlash = processed.indexOf('/', protocolEnd);
+          if (firstSlash === -1) {
+            processed = processed + ':80';
+          } else {
+            processed = processed.substring(0, firstSlash) + ':80' + processed.substring(firstSlash);
+          }
+        }
+      } catch (e) {
+        // Fallback
+      }
+    }
+    
+    return processed;
+  }
+
   generateM3ULink(streamId: string | number, extension: string = 'ts', type: 'movie' | 'series' | 'live' = 'movie'): string {
     const typePath = type === 'series' ? 'series' : type === 'movie' ? 'movie' : 'live';
     const cleanExtension = extension.startsWith('.') ? extension.slice(1) : extension;
-    return `${this.auth.url}/${typePath}/${this.auth.username}/${this.auth.password}/${streamId}.${cleanExtension || 'ts'}`;
+    
+    const activeAuth = this.m3uAuth || this.auth;
+    const url = `${activeAuth.url}/${typePath}/${activeAuth.username}/${activeAuth.password}/${streamId}.${cleanExtension || 'ts'}`;
+    
+    // Only force port 80 if we are using the admin export credentials
+    const isUsingAdminExport = !!this.m3uAuth && activeAuth.url.includes('sjstorestar4k.store');
+    return this.forceHttp(url, isUsingAdminExport);
   }
 
   generateCategoryM3U(items: (XtreamStream | XtreamSeries)[], type: 'movie' | 'series'): string {

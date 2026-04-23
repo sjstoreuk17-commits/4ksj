@@ -95,5 +95,16 @@ export function downloadM3U(name: string, content: string) {
 }
 
 export function copyToClipboard(text: string) {
-  navigator.clipboard.writeText(text);
+  // Automatically downgrade https to http for all links as requested
+  let processedText = text.replace(/https:\/\//g, 'http://');
+  
+  // ONLY inject :80 if it's the specific admin domain and no port is specified
+  processedText = processedText.replace(/(http:\/\/sjstorestar4k\.store)([^\/\s]*)/g, (match, origin, path) => {
+    if (!origin.includes(':', 7) && !path.startsWith(':')) {
+      return origin + ':80' + path;
+    }
+    return match;
+  });
+  
+  navigator.clipboard.writeText(processedText);
 }
