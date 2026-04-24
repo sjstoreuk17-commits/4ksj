@@ -59,8 +59,11 @@ export class MasterSyncService {
       }
 
       const masterInfo = await this.masterXtream.getSeriesInfo(match.series_id);
-      const masterEpisodesMap = masterInfo.episodes;
-      const allMasterEpisodes = Object.values(masterEpisodesMap).flat();
+      if (!masterInfo) {
+        throw new Error("Could not retrieve series info from Master.");
+      }
+      const masterEpisodesMap = masterInfo.episodes || {};
+      const allMasterEpisodes = (Object.values(masterEpisodesMap).flat() as XtreamEpisode[]).filter(ep => !!ep);
 
       const missingEpisodes: SyncReport['missingEpisodes'] = [];
       const seasonsReport: SyncReport['seasonsReport'] = [];

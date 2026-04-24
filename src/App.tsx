@@ -68,7 +68,9 @@ import { auth as fbAuth, db } from './lib/firebase';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, addDoc, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
 
-type AuthMode = 'gateway' | 'xtream' | 'm3u' | 'admin';
+import { HackingLoader } from './components/HackingLoader';
+
+type AuthMode = 'gateway' | 'xtream' | 'm3u' | 'admin' | 'master';
 
 export default function App() {
   const [authMode, setAuthMode] = useState<AuthMode>('gateway');
@@ -97,6 +99,8 @@ export default function App() {
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loginProgress, setLoginProgress] = useState(0);
+  const [loadingStep, setLoadingStep] = useState('');
   const [isGeneratingKey, setIsGeneratingKey] = useState(false);
   const [customKeyName, setCustomKeyName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -131,6 +135,28 @@ export default function App() {
   // Global Sync Results
   const [activeSyncReport, setActiveSyncReport] = useState<{ report: SyncReport, name: string } | null>(null);
   const [syncProgress, setSyncProgress] = useState<{ active: boolean; step: string; details: string; name: string }>({ active: false, step: '', details: '', name: '' });
+
+  const simulateProgress = async (steps: { msg: string, delay: number, weight: number }[]) => {
+    let current = loginProgress;
+    for (const step of steps) {
+      setLoadingStep(step.msg);
+      const iterations = Math.max(1, step.delay / 20);
+      const inc = step.weight / iterations;
+
+      for (let i = 0; i < iterations; i++) {
+        current += inc;
+        setLoginProgress(Math.min(Math.round(current), 95));
+        await new Promise(r => setTimeout(r, 20));
+      }
+    }
+  };
+
+  const finalizeLoading = async () => {
+    setLoadingStep('SYSTEM_READY_INITIALIZING');
+    setLoginProgress(100);
+    await new Promise(r => setTimeout(r, 1200)); 
+    setLoading(false);
+  };
 
   const xtream = useMemo(() => {
     if (!isLoggedIn || isM3UMode) return null;
@@ -172,10 +198,18 @@ export default function App() {
     if (!m3uUrl) return;
 
     setLoading(true);
+    setLoginProgress(0);
     setError(null);
     addLog('INITIATING M3U DATA PIPELINE...');
 
     try {
+      setLoadingStep('INITIATING_GATEWAY_HANDSHAKE');
+      await simulateProgress([
+        { msg: 'REMOTE_SOURCE_CONNECT', delay: 1000, weight: 15 },
+        { msg: 'PARSING_DATA_DIRECTIVES', delay: 1200, weight: 25 },
+        { msg: 'MAP_RECONSTRUCTION', delay: 800, weight: 20 },
+      ]);
+
       // 1. Try Xtream Tunneling first (standard Xtream M3U links have creds in params)
       try {
         const urlObj = new URL(m3uUrl);
@@ -271,11 +305,44 @@ export default function App() {
 
       setCurrentSeries(Array.from(seriesMap.values()));
       addLog(`M3U_PIPELINE_COMPLETE: ${playlist.entries.length} ITEMS EXTRACTED.`);
-      setLoading(false);
-
+      
+      await finalizeLoading();
     } catch (err: any) {
       setError(`Login failed: ${err.message}`);
       addLog(`ERR: M3U_TUNNEL_FAILURE - ${err.message}`);
+      setLoading(false);
+    }
+  };
+
+  const handleMasterAccess = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!accessKey) return;
+
+    setLoading(true);
+    setLoginProgress(0);
+    setError(null);
+    
+    try {
+      setLoadingStep('VALIDATING_MASTER_KEY');
+      const isValid = await checkAccessKey();
+      if (!isValid) {
+        setLoading(false);
+        return;
+      }
+
+      await simulateProgress([
+        { msg: 'CONNECTING_TO_ROOT_NODE', delay: 1200, weight: 15 },
+        { msg: 'OVERRIDING_SECURITY_PROTOCOLS', delay: 1500, weight: 25 },
+        { msg: 'DECRYPTING_CLOUD_REPOSITORIES', delay: 1200, weight: 25 },
+        { msg: 'MOUNTING_MASTER_FILESYSTEM', delay: 1000, weight: 15 },
+      ]);
+
+      const masterAuth = { url: "https://4ksj.store", username: "webplayer44", password: "62246624" };
+      setAuth(masterAuth);
+      await handleLogin(masterAuth);
+    } catch (err: any) {
+      setError(`MASTER_ACCESS_FAILED: ${err.message}`);
+      addLog(`ERR: MASTER_AUTH_LINK_FAILURE`);
       setLoading(false);
     }
   };
@@ -355,13 +422,27 @@ export default function App() {
 
   const handleAdminAuth = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (adminPass === 'sajid122') {
-      setAuth(adminAuth);
-      await fetchAdminKeys();
-      handleLogin(adminAuth);
-    } else {
-      setError('ACCESS_DENIED: INVALID_MAINFRAME_KEY');
-      addLog('AUTH_FAILURE: UNAUTHORIZED_ADMIN_ATTEMPT_DETECTED');
+    setLoading(true);
+    setLoginProgress(0);
+    try {
+      await simulateProgress([
+        { msg: 'ADMIN_CHALLENGE_INVOKED', delay: 800, weight: 20 },
+        { msg: 'KEY_INTERSECT_ANALYSIS', delay: 1000, weight: 30 },
+        { msg: 'ELEVATING_PRIVILEGES', delay: 800, weight: 20 },
+      ]);
+      
+      if (adminPass === 'sajid122') {
+        setAuth(adminAuth);
+        await fetchAdminKeys();
+        handleLogin(adminAuth);
+      } else {
+        setError('ACCESS_DENIED: INVALID_MAINFRAME_KEY');
+        addLog('AUTH_FAILURE: UNAUTHORIZED_ADMIN_ATTEMPT_DETECTED');
+        setLoading(false);
+      }
+    } catch (err: any) {
+      setError('ADMIN_LINK_ERR: ' + err.message);
+      setLoading(false);
     }
   };
 
@@ -372,14 +453,23 @@ export default function App() {
     }
     
     setLoading(true);
+    setLoginProgress(0);
     setError(null);
     addLog('HANDSHAKE INITIATED With REMOTE SERVER...');
 
     try {
+      await simulateProgress([
+        { msg: 'ESTABLISHING_TLS_HANDSHAKE', delay: 1000, weight: 15 },
+        { msg: 'RECOGNIZING_API_PATTERN', delay: 1200, weight: 15 },
+        { msg: 'SYNCING_USER_PROFILE', delay: 800, weight: 10 },
+      ]);
+      
       const service = new XtreamService(targetAuth, exportAuth);
+      setLoadingStep('BYPASSING_SECURITY_FIREWALL');
       await service.testConnection();
       
       addLog('ACCESS GRANTED. FETCHING SCHEMAS...');
+      setLoadingStep('EXTRACTING_CATEGORY_DATA');
       const [vCats, sCats] = await Promise.all([
         service.getVodCategories(),
         service.getSeriesCategories()
@@ -387,8 +477,10 @@ export default function App() {
 
       setVodCats(vCats);
       setSeriesCats(sCats);
+      setLoginProgress(75);
       
       addLog('FETCHING ENTIRE CONTENT DATABASE...');
+      setLoadingStep('SYNCHRONIZING_DATABASE_CHUNKS');
       const [streams, series] = await Promise.all([
         service.getVodStreams(),
         service.getSeries()
@@ -401,7 +493,7 @@ export default function App() {
       setIsM3UMode(false);
       
       addLog('CONNECTION SECURE. CORE DATA SYNCED.');
-      setLoading(false);
+      await finalizeLoading();
     } catch (err: any) {
       addLog(`ERR: CONNECTION_REJECTED - ${err.message}`);
       setError('Invalid credentials or Server Unreachable');
@@ -630,7 +722,8 @@ export default function App() {
               >
                 {[
                   { id: 'xtream', icon: QrCode, label: 'Login with Xtream', sub: 'SYNC_API_INTERFACE' },
-                  { id: 'm3u', icon: FileText, label: 'Login with M3U', sub: 'EXTRACT_PAYLOAD_CONFIG' }
+                  { id: 'm3u', icon: FileText, label: 'Login with M3U', sub: 'EXTRACT_PAYLOAD_CONFIG' },
+                  { id: 'master', icon: ShieldCheck, label: 'Master Sync Cloud', sub: 'ROOT_SERVER_ACCESS' }
                 ].map((btn, idx) => (
                   <motion.button 
                     key={btn.id}
@@ -831,6 +924,73 @@ export default function App() {
               </motion.div>
             )}
 
+            {authMode === 'master' && (
+              <motion.div 
+                key="master"
+                initial={{ x: 20, opacity: 0 }}
+                animate={{ x: 0, opacity: 1 }}
+                exit={{ x: -20, opacity: 0 }}
+              >
+                <div className="hacker-border bg-black/40 p-8 space-y-6">
+                  <div className="flex items-center gap-3 mb-6">
+                    <button onClick={() => setAuthMode('gateway')} className="p-2 hover:bg-[#00FF00]/10 rounded-full transition-colors">
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <span className="text-xs uppercase font-black tracking-widest text-[#00FF00]">MASTER_SYNC // CLOUD_ACCESS</span>
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="p-4 bg-[#00FF00]/5 border border-[#00FF00]/20 text-center">
+                       <ShieldCheck className="w-12 h-12 text-[#00FF00] mx-auto mb-2 animate-pulse" />
+                       <p className="text-[10px] opacity-60 uppercase">System requires a valid authorization key to bypass server security.</p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <label className="text-[10px] uppercase opacity-50 flex items-center gap-2 px-1">
+                        <Key className="w-3 h-3 text-[#00FF00]" /> CRYPTOGRAPHIC_ACCESS_KEY
+                      </label>
+                      <input 
+                        type="text" 
+                        value={accessKey}
+                        onChange={e => setAccessKey(e.target.value)}
+                        placeholder="ENTER_MASTER_KEY"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') handleMasterAccess();
+                        }}
+                        className="w-full bg-black/60 border border-[#00FF00]/40 p-4 text-sm font-black tracking-widest outline-none focus:border-[#00FF00] transition-all text-center placeholder:opacity-20"
+                        autoFocus
+                      />
+                    </div>
+
+                    <button 
+                      onClick={() => handleMasterAccess()}
+                      disabled={loading || !accessKey}
+                      className="w-full py-4 bg-[#00FF00] text-black font-black uppercase tracking-[0.2em] text-xs hover:bg-[#00FF00]/90 transition-all flex items-center justify-center gap-2 group disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {loading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <>
+                          <Cpu className="w-4 h-4 group-hover:rotate-90 transition-transform" />
+                          SYSTEM_ENTER
+                        </>
+                      )}
+                    </button>
+                    
+                    <p className="text-[8px] opacity-20 uppercase text-center mt-4">
+                      AUTHORIZED PERSONNEL ONLY. ALL ATTEMPTS LOGGED.
+                    </p>
+                  </div>
+
+                  {error && (
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="text-red-500 text-[10px] text-center uppercase font-bold mt-2">
+                       {error}
+                    </motion.div>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
             {authMode === 'admin' && (
               <motion.div 
                 key="admin"
@@ -881,6 +1041,13 @@ export default function App() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          {loading && (
+            <HackingLoader 
+              progress={loginProgress} 
+              step={loadingStep} 
+            />
+          )}
 
           <footer className="text-center opacity-20 text-[9px] uppercase tracking-tighter">
             Neural Tunnel Status: {loading ? 'DIVERGING' : 'STANDBY'} // Protocol: SECURE
