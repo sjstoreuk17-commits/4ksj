@@ -19,17 +19,14 @@ import {
   Terminal, 
   Search, 
   Download, 
-  Copy, 
   Film, 
   Tv, 
   Activity, 
   Home, 
-  Database,
-  ShieldAlert,
-  Cpu,
-  Monitor,
-  Skull,
-  Eye,
+  Cpu, 
+  Monitor, 
+  Skull, 
+  Eye, 
   ChevronRight,
   Loader2,
   RefreshCcw,
@@ -47,6 +44,12 @@ import {
   Image as ImageIcon,
   ExternalLink,
   Shield,
+  ShieldCheck,
+  ShieldAlert,
+  FileWarning,
+  Database,
+  X,
+  Copy,
   QrCode,
   Key,
   Plus,
@@ -60,6 +63,7 @@ import { copyToClipboard, parseM3U } from './lib/m3uParser';
 import { fetchApiData } from './services/proxyEngine';
 import { MergerService, MergedSeriesItem } from './services/mergerService';
 import { PosterGenerator } from './services/posterGenerator';
+import { MasterSyncService, SyncReport } from './services/masterSyncService';
 import { auth as fbAuth, db } from './lib/firebase';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { doc, getDoc, setDoc, onSnapshot, collection, addDoc, getDocs, query, where, deleteDoc, serverTimestamp } from 'firebase/firestore';
@@ -123,6 +127,10 @@ export default function App() {
   const [episodeRegistry, setEpisodeRegistry] = useState<Map<number, number>>(new Map());
   const [iconRegistry, setIconRegistry] = useState<Map<number, string>>(new Map());
   const [showMergerModal, setShowMergerModal] = useState(false);
+
+  // Global Sync Results
+  const [activeSyncReport, setActiveSyncReport] = useState<{ report: SyncReport, name: string } | null>(null);
+  const [syncProgress, setSyncProgress] = useState<{ active: boolean; step: string; details: string; name: string }>({ active: false, step: '', details: '', name: '' });
 
   const xtream = useMemo(() => {
     if (!isLoggedIn || isM3UMode) return null;
@@ -444,6 +452,41 @@ export default function App() {
       return (timeB || 0) - (timeA || 0);
     });
   }, [currentSeries]);
+
+  const onCheckOnMaster = async (series: XtreamSeries) => {
+    setSyncProgress({ active: true, step: 'INITIALIZING', details: 'Establishing secure link to Master Cloud...', name: series.name });
+    addLog(`MASTER_SYNC_INITIATED: SCANNING [${series.name}]...`);
+    
+    try {
+      const xtreamSvc = new XtreamService(auth); 
+      
+      setSyncProgress(p => ({ ...p, step: 'METADATA_FETCH', details: `Fetching local episode map for ${series.name}...` }));
+      const info = await xtreamSvc.getSeriesInfo(series.series_id);
+      const allEpisodes = Object.values(info.episodes).flat() as XtreamEpisode[];
+      
+      setSyncProgress(p => ({ ...p, step: 'MASTER_HANDSHAKE', details: 'Connecting to Master server [4ksj.store]...' }));
+      const syncService = new MasterSyncService();
+      
+      setSyncProgress(p => ({ ...p, step: 'CROSS_COMPARISON', details: `Analyzing ${allEpisodes.length} packets against master library...` }));
+      const report = await syncService.checkSeriesSync(series.name, allEpisodes, xtreamSvc);
+      
+      setSyncProgress(p => ({ ...p, active: false }));
+      setActiveSyncReport({ report, name: series.name });
+      
+      if (report.found) {
+        if (report.missingEpisodes.length > 0) {
+          addLog(`SYNC_SCAN_COMPLETE: [${series.name}] FOUND. ${report.missingEpisodes.length} PACKETS MISSED.`);
+        } else {
+          addLog(`SYNC_SCAN_COMPLETE: [${series.name}] SYNCHRONIZED.`);
+        }
+      } else {
+        addLog(`SYNC_SCAN_COMPLETE: [${series.name}] NOT ON MASTER.`);
+      }
+    } catch (e) {
+      setSyncProgress(p => ({ ...p, active: false }));
+      addLog('ERR: MASTER_SYNC_UNAVAILABLE');
+    }
+  };
 
   const displayList = useMemo(() => {
     const list = currentView === 'movies' ? currentStreams : currentSeries;
@@ -1133,6 +1176,7 @@ export default function App() {
                                 iconRegistry={iconRegistry}
                                 setIconRegistry={setIconRegistry}
                                 onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
+                                onCheckOnMaster={onCheckOnMaster}
                                 isM3UMode={isM3UMode}
                               />
                             </React.Fragment>
@@ -1255,6 +1299,7 @@ export default function App() {
                                     iconRegistry={iconRegistry}
                                     setIconRegistry={setIconRegistry}
                                     onOpenSeries={(s) => setSelectedSeriesForDetail(s)}
+                                    onCheckOnMaster={onCheckOnMaster}
                                     isM3UMode={isM3UMode}
                                     isSelectionMode={selectionMode}
                                     isSelected={selectedSeries.has((item as any).series_id || (item as any).stream_id)}
@@ -1402,6 +1447,21 @@ export default function App() {
               setSelectionMode(false);
               setSelectedSeries(new Map());
             }}
+          />
+        )}
+        {activeSyncReport && (
+          <SyncResultsModal 
+            report={activeSyncReport.report} 
+            seriesName={activeSyncReport.name} 
+            onClose={() => setActiveSyncReport(null)} 
+            addLog={addLog}
+          />
+        )}
+        {syncProgress.active && (
+          <SyncProcessingModal 
+            step={syncProgress.step}
+            details={syncProgress.details}
+            name={syncProgress.name}
           />
         )}
       </AnimatePresence>
@@ -2071,6 +2131,7 @@ const SeriesDetailModal = ({ series, xtream, onClose, addLog }: { series: Xtream
           {/* Cover & Info Sidebar */}
           <div className="w-full lg:w-72 p-6 border-r border-[#00FF00]/10 flex flex-col gap-4 overflow-y-auto hidden lg:flex">
             <img src={series.cover} className="w-full aspect-[2/3] object-cover hacker-border shadow-lg" referrerPolicy="no-referrer" />
+            
             <div className="space-y-4">
               <div className="space-y-1">
                 <span className="text-[8px] uppercase opacity-40 font-black">GENRE</span>
@@ -2165,6 +2226,221 @@ const SeriesDetailModal = ({ series, xtream, onClose, addLog }: { series: Xtream
   );
 };
 
+const SyncProcessingModal = ({ step, details, name }: { step: string; details: string; name: string }) => (
+  <div className="fixed inset-0 z-[110] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+    <motion.div 
+      initial={{ scale: 0.9, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      className="w-full max-w-md bg-[#050505] border border-[#00FF00]/40 p-8 flex flex-col items-center text-center shadow-[0_0_100px_rgba(0,255,0,0.1)] hacker-border"
+    >
+      <div className="relative mb-8">
+        <div className="w-24 h-24 border-4 border-[#00FF00]/10 rounded-full" />
+        <motion.div 
+          animate={{ rotate: 360 }}
+          transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+          className="absolute inset-0 w-24 h-24 border-4 border-t-[#00FF00] border-r-transparent border-b-transparent border-l-transparent rounded-full shadow-[0_0_20px_rgba(0,255,0,0.4)]"
+        />
+        <Shield className="absolute inset-0 m-auto w-8 h-8 text-[#00FF00] animate-pulse" />
+      </div>
+
+      <div className="space-y-4 w-full">
+        <div className="space-y-1">
+          <h2 className="text-xs font-black uppercase tracking-[0.3em] text-[#00FF00] glow-text">Master_Link_Syncing</h2>
+          <p className="text-[10px] font-bold opacity-60 uppercase">{name}</p>
+        </div>
+
+        <div className="py-4 border-y border-white/5 space-y-2">
+          <div className="flex justify-between items-center text-[7px] font-black uppercase tracking-tighter opacity-40">
+            <span>Current_Phase</span>
+            <span className="text-[#00FF00]">{step}</span>
+          </div>
+          <div className="text-[9px] font-mono text-[#00FF00]/80 h-8 flex items-center justify-center bg-white/5 px-4 mt-2">
+            {details}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-1 justify-center">
+          {[...Array(5)].map((_, i) => (
+            <motion.div 
+              key={i}
+              animate={{ opacity: [0.2, 1, 0.2] }}
+              transition={{ duration: 1, repeat: Infinity, delay: i * 0.1 }}
+              className="w-1.5 h-1.5 bg-[#00FF00]/80 rounded-full"
+            />
+          ))}
+        </div>
+      </div>
+    </motion.div>
+  </div>
+);
+
+const SyncResultsModal = ({ report, onClose, seriesName, addLog }: { report: SyncReport, onClose: () => void, seriesName: string, addLog: (m: string) => void }) => {
+  const [copiedAll, setCopiedAll] = useState(false);
+
+  const handleCopyAll = () => {
+    copyToClipboard(report.missingM3U);
+    setCopiedAll(true);
+    addLog(`MASTER_SYNC: ${seriesName} M3U_MANIFEST_COPIED`);
+    setTimeout(() => setCopiedAll(false), 2000);
+  };
+
+  const handleDownloadM3U = () => {
+    const blob = new Blob([report.missingM3U], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${seriesName}_MASTER_SYNC.m3u`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    addLog(`MASTER_SYNC: ${seriesName} M3U_DOWNLOAD_STARTED`);
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-xl">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="w-full max-w-2xl bg-[#090909] border border-[#00FF00]/30 shadow-[0_0_50px_rgba(0,255,0,0.2)] flex flex-col max-h-[90vh]"
+      >
+        <div className="p-6 border-b border-[#00FF00]/20 flex items-center justify-between bg-black/40">
+          <div>
+            <h2 className="text-sm font-black uppercase tracking-[0.2em] text-[#00FF00] drop-shadow-[0_0_8px_rgba(0,255,0,0.5)]">Sync_Manifest // {seriesName}</h2>
+            <p className="text-[8px] opacity-40 uppercase tracking-widest mt-1">Found on Master: {report.found ? 'TRUE' : 'FALSE'} | Status: {report.found ? (report.missingEpisodes.length > 0 ? 'BEHIND_MASTER' : 'SYNCHRONIZED') : 'NOT_FOUND_ON_MASTER'}</p>
+          </div>
+          <button onClick={onClose} className="p-2 hover:bg-white/5 transition-colors">
+            <X className="w-5 h-5 text-red-500" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+          {report.found ? (
+            <>
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="p-3 bg-white/5 border border-white/10 flex flex-col items-center">
+                  <span className="text-[7px] opacity-40 uppercase mb-1">Match_Count</span>
+                  <span className="text-sm font-black text-[#00FF00]">{report.matchCount}</span>
+                </div>
+                <div className="p-3 bg-white/5 border border-white/10 flex flex-col items-center">
+                  <span className="text-[7px] opacity-40 uppercase mb-1">Master_Total</span>
+                  <span className="text-sm font-black">{report.totalMasterEpisodes}</span>
+                </div>
+                <div className="p-3 bg-white/5 border border-white/10 flex flex-col items-center">
+                  <span className="text-[7px] opacity-40 uppercase mb-1">Current_Total</span>
+                  <span className="text-sm font-black">{report.totalCurrentEpisodes}</span>
+                </div>
+                <div className="p-3 bg-white/5 border border-white/10 flex flex-col items-center">
+                  <span className="text-[7px] opacity-40 uppercase mb-1">Missing_Items</span>
+                  <span className={`text-sm font-black ${report.missingEpisodes.length > 0 ? 'text-red-500' : 'text-[#00FF00]'}`}>
+                    {report.missingEpisodes.length}
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <h3 className="text-[10px] font-black uppercase tracking-widest mb-4 flex items-center gap-2">
+                  <Database className="w-3 h-3 text-[#00FF00]" />
+                  Seasons_Sector_Breakdown
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {report.seasonsReport.map((s, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 bg-black border border-[#00FF00]/10 hover:border-[#00FF00]/40 transition-colors group">
+                      <div className="flex items-center gap-3">
+                        <span className="text-[10px] font-black opacity-40">S{s.season.padStart(2, '0')}</span>
+                        <div className={`w-1 h-4 ${s.status === 'match' ? 'bg-[#00FF00]' : s.status === 'missing' ? 'bg-red-500' : 'bg-yellow-500'}`} />
+                      </div>
+                      <div className="text-right">
+                        <div className="text-[8px] font-bold opacity-60">EP: {s.currentCount} / {s.masterCount}</div>
+                        <div className={`text-[7px] font-black uppercase ${s.status === 'match' ? 'text-[#00FF00]' : 'text-red-500'}`}>{s.status}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {report.missingEpisodes.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-[10px] font-black uppercase tracking-widest flex items-center gap-2">
+                      <FileWarning className="w-3 h-3 text-red-500" />
+                      Detected_Miss_Packets
+                    </h3>
+                    <div className="flex items-center gap-2">
+                      <button 
+                        onClick={handleDownloadM3U}
+                        className="flex items-center gap-2 px-3 py-1 bg-[#00FF00]/10 border border-[#00FF00]/30 hover:bg-[#00FF00] hover:text-black transition-all text-[8px] font-black"
+                      >
+                        <Download className="w-3 h-3" />
+                        DOWNLOAD_M3U
+                      </button>
+                      <button 
+                        onClick={handleCopyAll}
+                        className="flex items-center gap-2 px-3 py-1 bg-[#00FF00]/10 border border-[#00FF00]/30 hover:bg-[#00FF00] hover:text-black transition-all text-[8px] font-black"
+                      >
+                        <Copy className="w-3 h-3" />
+                        {copiedAll ? 'COPIED' : 'COPY_M3U'}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    {report.missingEpisodes.map((ep, idx) => (
+                      <div key={idx} className="flex items-center justify-between p-2 bg-white/5 hover:bg-white/10 border border-white/5 transition-colors group">
+                        <div className="flex items-center gap-4">
+                          <span className="text-[8px] font-mono opacity-40 group-hover:opacity-100 transition-opacity">S{String(ep.season).padStart(2, '0')} E{String(ep.episode).padStart(2, '0')}</span>
+                          <span className="text-[9px] font-black uppercase text-red-500 truncate max-w-[200px] sm:max-w-md">{ep.title}</span>
+                        </div>
+                        <button 
+                          onClick={() => { copyToClipboard(`S${ep.season}E${ep.episode} - ${ep.title}`); addLog('EPISODE_METADATA_COPIED'); }}
+                          className="p-1 opacity-0 group-hover:opacity-100 transition-opacity hover:text-[#00FF00]"
+                        >
+                          <Copy className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center py-12 text-center">
+              <ShieldAlert className="w-16 h-16 text-red-600 mb-4 animate-bounce" />
+              <h3 className="text-xl font-black uppercase tracking-widest text-red-500 mb-2 underline">NOT FOUND ANY WEB SERIES</h3>
+              <p className="text-[10px] opacity-40 uppercase max-w-sm mb-8">The series entity [${seriesName}] was not detected in the master cloud repository. Synchronization is currently impossible.</p>
+              
+              <div className="grid grid-cols-2 gap-4 w-full max-w-md">
+                <button 
+                  onClick={handleCopyAll}
+                  className="flex flex-col items-center gap-3 p-6 bg-[#00FF00]/5 border border-[#00FF00]/20 hover:border-[#00FF00] hover:bg-[#00FF00]/10 transition-all group"
+                >
+                  <Copy className="w-8 h-8 text-[#00FF00] group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">Copy_Complete_Series</span>
+                </button>
+                <button 
+                  onClick={handleDownloadM3U}
+                  className="flex flex-col items-center gap-3 p-6 bg-blue-500/5 border border-blue-500/20 hover:border-blue-500 hover:bg-blue-500/10 transition-all group"
+                >
+                  <Download className="w-8 h-8 text-blue-500 group-hover:scale-110 transition-transform" />
+                  <span className="text-[10px] font-black uppercase tracking-widest">Download_Complete_M3U</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="p-6 border-t border-[#00FF00]/20 bg-black/40 flex justify-end">
+          <button 
+            onClick={onClose}
+            className="px-8 py-2 border border-[#00FF00]/40 text-[#00FF00] font-black uppercase tracking-widest text-[10px] hover:bg-[#00FF00] hover:text-black transition-all hover:shadow-[0_0_20px_rgba(0,255,0,0.3)]"
+          >
+            Acknowledge_Link
+          </button>
+        </div>
+      </motion.div>
+    </div>
+  );
+};
+
 const SidebarBtn = ({ icon, label, active, onClick }: { icon: any, label: string, active: boolean, onClick: () => void }): React.ReactElement => (
   <button 
     onClick={onClick}
@@ -2190,6 +2466,7 @@ const ContentCard = ({
   iconRegistry,
   setIconRegistry,
   onOpenSeries, 
+  onCheckOnMaster,
   isM3UMode,
   isSelectionMode,
   isSelected,
@@ -2205,6 +2482,7 @@ const ContentCard = ({
   iconRegistry?: Map<number, string>,
   setIconRegistry?: React.Dispatch<React.SetStateAction<Map<number, string>>>,
   onOpenSeries?: (s: XtreamSeries) => void,
+  onCheckOnMaster?: (s: XtreamSeries) => void,
   isM3UMode?: boolean,
   isSelectionMode?: boolean,
   isSelected?: boolean,
@@ -2559,13 +2837,22 @@ const ContentCard = ({
             </button>
 
             {type === 'series' && !isM3UMode && (
-              <button 
-                onClick={() => onOpenSeries?.(item as XtreamSeries)}
-                className="col-span-2 flex items-center justify-center gap-2 py-1.5 px-1 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all mb-0.5 shadow-[0_0_10px_rgba(0,255,0,0.05)]"
-              >
-                <Monitor className="w-2.5 h-2.5" />
-                <span className="text-[7.5px] font-bold tracking-widest uppercase">OPEN_SERIES</span>
-              </button>
+              <>
+                <button 
+                  onClick={() => onOpenSeries?.(item as XtreamSeries)}
+                  className="col-span-2 flex items-center justify-center gap-2 py-1.5 px-1 bg-[#00FF00]/10 hover:bg-[#00FF00] hover:text-black transition-all mb-0.5 shadow-[0_0_10px_rgba(0,255,0,0.05)] text-[7.5px] font-bold tracking-widest uppercase"
+                >
+                  <Monitor className="w-2.5 h-2.5" />
+                  OPEN_SERIES
+                </button>
+                <button 
+                  onClick={(e) => { e.stopPropagation(); onCheckOnMaster?.(item as XtreamSeries); }}
+                  className="col-span-2 flex items-center justify-center gap-2 py-1.5 px-1 bg-blue-500/10 hover:bg-blue-500 hover:text-white border border-blue-500/30 transition-all text-[7.5px] font-black tracking-widest uppercase"
+                >
+                  <ShieldCheck className="w-2.5 h-2.5" />
+                  CHECK_ON_MASTER
+                </button>
+              </>
             )}
             <button 
               onClick={handleCopy}
