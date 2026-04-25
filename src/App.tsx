@@ -120,6 +120,7 @@ export default function App() {
   const [isDataLoaded, setIsDataLoaded] = useState(false);
   
   const [selectedSeriesForDetail, setSelectedSeriesForDetail] = useState<XtreamSeries | null>(null);
+  const [sortBy, setSortBy] = useState<'top_added' | 'old_added' | 'alphabetical'>('top_added');
 
   // M3U Data Mode State
   const [isM3UMode, setIsM3UMode] = useState(false);
@@ -595,11 +596,31 @@ export default function App() {
       items = [...list];
     } else if (selectedCategory) {
       items = list.filter(i => i.category_id === selectedCategory);
+      
+      // Apply Sorting for other categories
+      items.sort((a, b) => {
+        if (sortBy === 'top_added' || sortBy === 'old_added') {
+          // Determine time based on item type
+          const getTime = (item: any) => {
+            const val = item.added || item.last_modified;
+            if (!val) return 0;
+            return !isNaN(Number(val)) ? Number(val) : new Date(val).getTime() / 1000;
+          };
+          
+          const timeA = getTime(a);
+          const timeB = getTime(b);
+          
+          return sortBy === 'top_added' ? (timeB || 0) - (timeA || 0) : (timeA || 0) - (timeB || 0);
+        } else if (sortBy === 'alphabetical') {
+          return a.name.localeCompare(b.name);
+        }
+        return 0;
+      });
     }
 
     const filtered = items.filter(i => i.name.toLowerCase().includes(searchQuery.toLowerCase()));
     return filtered.slice(0, renderLimit);
-  }, [currentStreams, currentSeries, currentView, searchQuery, renderLimit, selectedCategory, recentlyAddedMovies, recentlyAddedSeries]);
+  }, [currentStreams, currentSeries, currentView, searchQuery, renderLimit, selectedCategory, recentlyAddedMovies, recentlyAddedSeries, sortBy]);
 
   const [categorySelection, setCategorySelection] = useState<{ id: string, name: string } | null>(null);
 
@@ -1410,34 +1431,47 @@ export default function App() {
                                 {(currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats).find(c => c.category_id === selectedCategory)?.category_name}
                               </h3>
                             </div>
-                            
-                            <div className="flex items-center gap-3 lg:gap-4">
+                               <div className="flex flex-wrap items-center gap-2 lg:gap-4">
                                {(currentView === 'series' || currentView === 'movies') && selectedCategory && (
                                   <button 
                                     onClick={() => {
                                       setSelectionMode(!selectionMode);
                                       if (selectionMode) setSelectedSeries(new Map());
                                     }}
-                                    className={`btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 ${selectionMode ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'opacity-60'}`}
+                                    className={`btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 whitespace-nowrap ${selectionMode ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'opacity-60'}`}
                                   >
-                                    <Layers className="w-3 h-3" /> {selectionMode ? 'CANCEL_SELECTION' : 'MULTI_SELECT'}
+                                    <Layers className="w-3 h-3" /> {selectionMode ? 'CANCEL' : 'MULTI_SELECT'}
                                   </button>
                                )}
                                {selectionMode && selectedSeries.size > 0 && (
                                  <button 
                                    onClick={() => setShowMergerModal(true)}
-                                   className="btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 bg-blue-500 text-white border-blue-400 hover:bg-blue-600 animate-pulse transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)]"
+                                   className="btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 bg-blue-500 text-white border-blue-400 hover:bg-blue-600 animate-pulse transition-all shadow-[0_0_15px_rgba(59,130,246,0.5)] whitespace-nowrap"
                                  >
-                                   <Zap className="w-3 h-3" /> EXPORT_{selectedSeries.size}_ITEMS
+                                   <Zap className="w-3 h-3" /> EXPORT_{selectedSeries.size}
                                  </button>
                                )}
-                               <div className="relative flex-1 hacker-border px-3 py-1 bg-black/40 flex items-center gap-2">
+                               {selectedCategory && selectedCategory !== 'all' && selectedCategory !== 'recently_added' && (
+                                 <div className="relative hacker-border px-3 py-1 bg-black/40 flex items-center gap-2 whitespace-nowrap">
+                                   <Filter className="w-3 h-3 opacity-40 text-[#00FF00]" />
+                                   <select 
+                                     value={sortBy}
+                                     onChange={(e) => setSortBy(e.target.value as any)}
+                                     className="bg-transparent border-none outline-none text-[9px] lg:text-[10px] uppercase text-[#00FF00] cursor-pointer appearance-none px-1"
+                                   >
+                                     <option value="top_added" className="bg-black text-[#00FF00]">TOP ADDED</option>
+                                     <option value="old_added" className="bg-black text-[#00FF00]">OLD ADDED</option>
+                                     <option value="alphabetical" className="bg-black text-[#00FF00]">ALPHABETICAL</option>
+                                   </select>
+                                 </div>
+                               )}
+                               <div className="relative flex-1 min-w-[150px] hacker-border px-3 py-2 bg-black/40 flex items-center gap-2">
                                  <Search className="w-3 h-3 opacity-40" />
                                  <input 
                                    value={searchQuery}
                                    onChange={e => setSearchQuery(e.target.value)}
-                                   placeholder="FILTER_STREAM..."
-                                   className="bg-transparent border-none outline-none text-[9px] lg:text-[10px] uppercase w-full lg:w-40"
+                                   placeholder="SEARCH..."
+                                   className="bg-transparent border-none outline-none text-[9px] lg:text-[10px] uppercase w-full"
                                  />
                                </div>
                                <button 
@@ -1445,7 +1479,7 @@ export default function App() {
                                    const catName = (currentView === 'movies' ? augmentedVodCats : augmentedSeriesCats).find(c => c.category_id === selectedCategory)?.category_name || "Category";
                                    downloadFullCategory(selectedCategory!, catName);
                                  }} 
-                                 className="btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2"
+                                 className="btn-hacker py-1 px-3 text-[8px] lg:text-[10px] flex items-center gap-2 whitespace-nowrap ml-auto lg:ml-0"
                                >
                                  <Download className="w-3 h-3" /> DUMP
                                </button>
