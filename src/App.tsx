@@ -273,7 +273,8 @@ export default function App() {
 
       seriesEntries.forEach(e => {
         // Group by base name to treat individual M3U lines as one series
-        const baseName = e.name.replace(/\s*[sS]\d+\s*[eE]\d+.*$|\s*[sS]eason\s*\d+\s*[eE]pisode\s*\d+.*$/i, '').trim() || e.name;
+        // Remove Season/Episode tags but keep language info in brackets
+        const baseName = e.name.replace(/\s*[sS]\d+\s*[eE]\d+|\s*[sS]eason\s*\d+\s*[eE]pisode\s*\d+/i, '').trim() || e.name;
         
         if (!seriesMap.has(baseName)) {
           seriesMap.set(baseName, {
@@ -2823,7 +2824,10 @@ const ContentCard = ({
         try {
           setExporting(true);
           const info = await xtream.getSeriesInfo((item as XtreamSeries).series_id);
-          const allEpisodes = Object.values(info.episodes).flat().sort((a, b) => a.episode_num - b.episode_num);
+          const allEpisodes = Object.values(info.episodes).flat().sort((a, b) => {
+            if (a.season !== b.season) return a.season - b.season;
+            return a.episode_num - b.episode_num;
+          });
           setAvailableEpisodes(allEpisodes);
           setStartRange(1);
           setEndRange(allEpisodes.length);
@@ -2851,7 +2855,7 @@ const ContentCard = ({
   const handleRangeExport = (mode: 'all' | 'range') => {
     let episodesToExport = availableEpisodes;
     if (mode === 'range') {
-      episodesToExport = availableEpisodes.filter(ep => ep.episode_num >= startRange && ep.episode_num <= endRange);
+      episodesToExport = availableEpisodes.slice(startRange - 1, endRange);
     }
     
     let m3uContent = "";
@@ -2859,7 +2863,10 @@ const ContentCard = ({
       m3uContent = "#EXTM3U\r\n";
       episodesToExport.forEach(ep => {
         const url = (ep as any).raw_url || streamUrl;
-        m3uContent += `#EXTINF:-1 tvg-id="" tvg-name="${ep.title}" tvg-logo="${icon}" group-title="${name}",${ep.title}\r\n${url}\r\n`;
+        const seasonPrefix = ep.season < 10 ? `S0${ep.season}` : `S${ep.season}`;
+        const episodePrefix = ep.episode_num < 10 ? `E0${ep.episode_num}` : `E${ep.episode_num}`;
+        const epName = `${name} ${seasonPrefix}${episodePrefix}`;
+        m3uContent += `#EXTINF:-1 tvg-id="" tvg-name="${epName}" tvg-logo="${icon}" group-title="${name}",${epName}\r\n${url}\r\n`;
       });
     } else if (xtream) {
       m3uContent = xtream.generateSeriesM3U(name, icon, episodesToExport);

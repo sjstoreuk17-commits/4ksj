@@ -132,7 +132,7 @@ export class XtreamService {
       const url = this.generateM3ULink(ep.id, ep.container_extension, 'series');
       const seasonPrefix = ep.season < 10 ? `S0${ep.season}` : `S${ep.season}`;
       const episodePrefix = ep.episode_num < 10 ? `E0${ep.episode_num}` : `E${ep.episode_num}`;
-      const epName = `${name} ${seasonPrefix} ${episodePrefix}`;
+      const epName = `${name} ${seasonPrefix}${episodePrefix}`;
       // Standard attributes for OTT Panels
       m3u += `#EXTINF:-1 tvg-id="" tvg-name="${epName}" tvg-logo="${cover}" group-title="${name}",${epName}\r\n${url}\r\n`;
     });

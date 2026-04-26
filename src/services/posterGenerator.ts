@@ -117,13 +117,26 @@ export class PosterGenerator {
         if (itemCategory) {
             ctx.font = '800 24px "Inter", sans-serif';
             ctx.fillStyle = '#6366f1'; 
-            this.wrapText(ctx, itemCategory.toUpperCase(), x + posterWidth / 2, y + posterHeight - 125, posterWidth - 60, 28, 2);
+            this.wrapText(ctx, itemCategory.toUpperCase(), x + posterWidth / 2, y + posterHeight - 170, posterWidth - 60, 28, 2);
         }
 
         // --- TITLE ---
         ctx.font = 'bold 38px "Inter", sans-serif';
         ctx.fillStyle = '#ffffff';
-        this.wrapText(ctx, itemName.toUpperCase(), x + posterWidth / 2, y + posterHeight - 65, posterWidth - 40, 44, 2);
+        
+        const titleLines = this.getWrappedLines(ctx, itemName.toUpperCase(), posterWidth - 40);
+        const titleLineHeight = 44;
+        const maxTitleLines = 3; // 3 lines is usually plenty and looks cleaner
+        const linesToDraw = titleLines.slice(0, maxTitleLines);
+        
+        // Centering logic: The base "center line" is at y + posterHeight - 80
+        // We shift the starting Y up based on total height of lines
+        const totalTitleHeight = linesToDraw.length * titleLineHeight;
+        const titleStartY = (y + posterHeight - 85) - (totalTitleHeight / 2) + (titleLineHeight / 2);
+
+        linesToDraw.forEach((line, index) => {
+            ctx.fillText(line, x + posterWidth / 2, titleStartY + index * titleLineHeight);
+        });
 
         // 4. BORDER HIGHLIGHT
         ctx.strokeStyle = 'rgba(255,255,255,0.1)';
@@ -160,27 +173,31 @@ export class PosterGenerator {
     ctx.closePath();
   }
 
-  private static wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number, maxLines: number = 2) {
+  private static getWrappedLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number): string[] {
     const words = text.split(' ');
-    let line = '';
-    let testY = y;
-    let linesDrawn = 0;
+    const lines: string[] = [];
+    let currentLine = '';
 
     for (let n = 0; n < words.length; n++) {
-      let testLine = line + words[n] + ' ';
+      let testLine = currentLine + words[n] + ' ';
       let metrics = ctx.measureText(testLine);
       if (metrics.width > maxWidth && n > 0) {
-        ctx.fillText(line, x, testY);
-        line = words[n] + ' ';
-        testY += lineHeight;
-        linesDrawn++;
-        if (linesDrawn >= maxLines) break;
+        lines.push(currentLine.trim());
+        currentLine = words[n] + ' ';
       } else {
-        line = testLine;
+        currentLine = testLine;
       }
     }
-    if (linesDrawn < maxLines) {
-        ctx.fillText(line, x, testY);
-    }
+    lines.push(currentLine.trim());
+    return lines;
+  }
+
+  private static wrapText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, lineHeight: number, maxLines: number = 2) {
+    const lines = this.getWrappedLines(ctx, text, maxWidth);
+    const linesToDraw = lines.slice(0, maxLines);
+    
+    linesToDraw.forEach((line, i) => {
+        ctx.fillText(line, x, y + i * lineHeight);
+    });
   }
 }
