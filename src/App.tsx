@@ -2293,6 +2293,30 @@ const SeriesDetailModal = ({ series, xtream, onClose, addLog }: { series: Xtream
     fetchInfo();
   }, [series]);
 
+  const handleCopySeason = (season: string) => {
+    if (!info || !xtream) return;
+    const episodes = info.episodes[season];
+    const m3u = xtream.generateSeriesM3U(series.name, series.cover, episodes);
+    copyToClipboard(m3u);
+    addLog(`SEASON_${season}_LINK_COPIED: ${series.name.substring(0, 15)}...`);
+  };
+
+  const handleDownloadSeason = (season: string) => {
+    if (!info || !xtream) return;
+    const episodes = info.episodes[season];
+    const m3u = xtream.generateSeriesM3U(series.name, series.cover, episodes);
+    const blob = new Blob([m3u], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${series.name}_Season_${season}.m3u`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    addLog(`SEASON_${season}_DOWNLOAD_STARTED: ${series.name.substring(0, 15)}...`);
+  };
+
   const copyEpisode = (ep: any) => {
     let link = "";
     if (ep.raw_url) {
@@ -2367,15 +2391,34 @@ const SeriesDetailModal = ({ series, xtream, onClose, addLog }: { series: Xtream
             ) : info && (
                <>
                  {/* Season Selector */}
-                 <div className="flex gap-2 p-4 overflow-x-auto custom-scrollbar border-b border-[#00FF00]/10 bg-black/40">
+                 <div className="flex gap-4 p-4 overflow-x-auto custom-scrollbar border-b border-[#00FF00]/10 bg-black/40">
                     {Object.keys(info.episodes).map(s => (
-                       <button 
-                         key={s}
-                         onClick={() => setActiveSeason(s)}
-                         className={`px-4 py-2 text-[10px] font-black uppercase border transition-all whitespace-nowrap ${activeSeason === s ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'border-white/10 hover:border-[#00FF00]/40'}`}
-                       >
-                         Season {s}
-                       </button>
+                       <div key={s} className="flex flex-col gap-2 min-w-fit">
+                          <button 
+                            onClick={() => setActiveSeason(s)}
+                            className={`px-6 py-2 text-[10px] font-black uppercase border transition-all whitespace-nowrap ${activeSeason === s ? 'bg-[#00FF00] text-black border-[#00FF00]' : 'border-white/10 hover:border-[#00FF00]/40'}`}
+                          >
+                            Season {s}
+                          </button>
+                          <div className="flex gap-1">
+                             <button 
+                               onClick={(e) => { e.stopPropagation(); handleCopySeason(s); }}
+                               className="flex-1 py-1 px-2 bg-[#00FF00]/5 hover:bg-[#00FF00] hover:text-black border border-[#00FF00]/10 transition-all flex items-center justify-center gap-1"
+                               title="Copy Season M3U"
+                             >
+                               <Copy className="w-2.5 h-2.5" />
+                               <span className="text-[7px] font-black uppercase">COPY</span>
+                             </button>
+                             <button 
+                               onClick={(e) => { e.stopPropagation(); handleDownloadSeason(s); }}
+                               className="flex-1 py-1 px-2 bg-[#00FF00]/5 hover:bg-[#00FF00] hover:text-black border border-[#00FF00]/10 transition-all flex items-center justify-center gap-1"
+                               title="Download Season M3U"
+                             >
+                               <Download className="w-2.5 h-2.5" />
+                               <span className="text-[7px] font-black uppercase">DLOAD</span>
+                             </button>
+                          </div>
+                       </div>
                     ))}
                  </div>
                  
