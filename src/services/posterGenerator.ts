@@ -115,9 +115,14 @@ export class PosterGenerator {
         
         // --- CATEGORY BADGE ---
         if (itemCategory) {
-            ctx.font = '800 24px "Inter", sans-serif';
-            ctx.fillStyle = '#6366f1'; 
-            this.wrapText(ctx, itemCategory.toUpperCase(), x + posterWidth / 2, y + posterHeight - 170, posterWidth - 60, 28, 2);
+            ctx.save();
+            ctx.font = '900 26px "Inter", sans-serif';
+            ctx.fillStyle = '#00f0ff'; // Vibrant Neon Cyan
+            ctx.shadowColor = 'rgba(0,0,0,1)';
+            ctx.shadowBlur = 10;
+            ctx.letterSpacing = '2px';
+            this.wrapText(ctx, itemCategory.toUpperCase(), x + posterWidth / 2, y + posterHeight - 175, posterWidth - 60, 28, 1);
+            ctx.restore();
         }
 
         // --- TITLE ---
