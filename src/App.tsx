@@ -2740,6 +2740,7 @@ const ContentCard = ({
   const [availableEpisodes, setAvailableEpisodes] = useState<XtreamEpisode[]>([]);
   const [startRange, setStartRange] = useState(1);
   const [endRange, setEndRange] = useState(1);
+  const [showOverlay, setShowOverlay] = useState(false);
   
   const name = item.name;
   const movie = item as any;
@@ -2995,7 +2996,21 @@ const ContentCard = ({
     <motion.div 
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      onClick={() => isSelectionMode && onToggleSelection?.()}
+      onClick={(e) => {
+        if (isSelectionMode) {
+          onToggleSelection?.();
+        } else {
+          // Explicitly toggle overlay for touch devices
+          setShowOverlay(!showOverlay);
+        }
+      }}
+      onMouseEnter={() => !isSelectionMode && setShowOverlay(true)}
+      onMouseLeave={() => {
+        if (!isSelectionMode) {
+          setShowOverlay(false);
+          setShowRangeSelector(false);
+        }
+      }}
       className={`hacker-border aspect-[2/3] group relative overflow-hidden flex flex-col cursor-pointer transition-all ${
         isSelected ? 'border-[#00FF00] scale-95 shadow-[0_0_20px_rgba(0,255,0,0.3)] bg-[#00FF00]/10' : 'bg-gray-900'
       }`}
@@ -3021,7 +3036,7 @@ const ContentCard = ({
       )}
 
       {/* Persistent Title Overlay - Always Visible */}
-      <div className="absolute inset-x-0 bottom-0 pt-10 pb-3 px-2 sm:px-3 bg-gradient-to-t from-black via-black/80 to-transparent z-20 pointer-events-none group-hover:opacity-0 transition-opacity duration-300">
+      <div className={`absolute inset-x-0 bottom-0 pt-10 pb-3 px-2 sm:px-3 bg-gradient-to-t from-black via-black/80 to-transparent z-20 pointer-events-none transition-opacity duration-300 ${(showOverlay || isSelected) ? 'opacity-0' : 'opacity-100'}`}>
         <div className="relative">
           <div className="absolute -left-1 top-0 bottom-0 w-[2.5px] bg-[#00FF00] shadow-[0_0_10px_rgba(0,255,0,0.5)]" />
           <h4 className="text-[9px] sm:text-[11px] font-black uppercase line-clamp-2 leading-tight tracking-[0.05em] pl-2 text-[#00FF00] drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">
@@ -3031,7 +3046,12 @@ const ContentCard = ({
       </div>
 
       {/* Hover Overlay */}
-      <div className="absolute inset-x-0 bottom-0 p-2 sm:p-3 translate-y-full group-hover:translate-y-0 transition-transform duration-300 z-20 bg-black/95 border-t border-[#00FF00]/40 backdrop-blur-md overflow-y-auto max-h-[85%]">
+      <div 
+        className={`absolute inset-x-0 bottom-0 p-2 sm:p-3 transition-transform duration-300 z-20 bg-black/95 border-t border-[#00FF00]/40 backdrop-blur-md overflow-y-auto max-h-[90%] ${
+          showOverlay ? 'translate-y-0' : 'translate-y-full'
+        }`}
+        onClick={(e) => e.stopPropagation()} // Prevent card toggle when clicking inside overlay
+      >
         {showRangeSelector ? (
           <div className="space-y-2 py-1">
             <div className="flex items-center justify-between">
