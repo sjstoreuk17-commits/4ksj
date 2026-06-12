@@ -2,7 +2,8 @@ export class PosterGenerator {
   static async generateCollage(
     items: (any)[], 
     type: 'movie' | 'series',
-    onProgress?: (msg: string) => void
+    onProgress?: (msg: string) => void,
+    subtitle?: string
   ): Promise<string> {
     const canvas = document.createElement('canvas');
     const ctx = canvas.getContext('2d');
@@ -35,9 +36,13 @@ export class PosterGenerator {
     ctx.fillStyle = 'rgba(255,255,255,0.02)';
     ctx.fillRect(0, 0, canvas.width, verticalMarginTop - 20);
     
-    const headerTitle = type === 'series' 
+    let headerTitle = type === 'series' 
       ? 'RECENTLY ADDED WEB SERIES' 
       : 'RECENTLY ADDED MOVIES';
+    
+    if (subtitle) {
+      headerTitle += ` - ${subtitle}`;
+    }
     
     ctx.font = 'bold 90px "Inter", sans-serif';
     ctx.fillStyle = '#ffffff';

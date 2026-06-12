@@ -2099,6 +2099,7 @@ const BulkExporterModal = ({
   onComplete: () => void
 }) => {
   const [isProcessing, setIsProcessing] = React.useState(false);
+  const [posterMode, setPosterMode] = React.useState<'single' | 'split'>('single');
 
   const handleExport = async (mode: 'download' | 'text' | 'frame') => {
     setIsProcessing(true);
@@ -2125,14 +2126,46 @@ const BulkExporterModal = ({
           };
         });
 
-        addLog("POSTER_FRAME: GENERATING LUXURY COLLAGE...");
-        const dataUrl = await PosterGenerator.generateCollage(enrichedItems, type, (msg) => addLog(msg));
-        const a = document.createElement('a');
-        a.href = dataUrl;
-        const fileName = `${selectedItems[0].name.replace(/\s+/g, '_')}_POSTER_FRAME.jpg`;
-        a.download = fileName;
-        a.click();
-        addLog(`POSTER_FRAME: DOWNLOADED AS [${fileName}].`);
+        if (posterMode === 'split') {
+          const chunkSize = 12;
+          const totalChunks = Math.ceil(enrichedItems.length / chunkSize);
+          addLog(`POSTER_FRAME: SPLIT_MODE ENABLED. CREATING ${totalChunks} COLLAGES (max 12 items each)...`);
+
+          for (let i = 0; i < totalChunks; i++) {
+            const chunk = enrichedItems.slice(i * chunkSize, (i + 1) * chunkSize);
+            const partNum = i + 1;
+            addLog(`POSTER_FRAME: GENERATING PART ${partNum}/${totalChunks} (${chunk.length} ITEMS)...`);
+            
+            const dataUrl = await PosterGenerator.generateCollage(
+              chunk, 
+              type, 
+              (msg) => addLog(`[PART ${partNum}] ${msg}`),
+              `PART ${partNum} OF ${totalChunks}`
+            );
+
+            const a = document.createElement('a');
+            a.href = dataUrl;
+            const itemBaseName = selectedItems[0]?.name?.replace(/\s+/g, '_') || 'EXPORT';
+            const fileName = `${itemBaseName}_POSTER_PART_${partNum}_OF_${totalChunks}.jpg`;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            // Wait 1.2s between downloads so the browser handles multiple downloads smoothly
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            addLog(`POSTER_FRAME: DOWNLOAD COMPLETED FOR [${fileName}].`);
+          }
+        } else {
+          addLog("POSTER_FRAME: GENERATING LUXURY COLLAGE...");
+          const dataUrl = await PosterGenerator.generateCollage(enrichedItems, type, (msg) => addLog(msg));
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          const fileName = `${selectedItems[0].name.replace(/\s+/g, '_')}_POSTER_FRAME.jpg`;
+          a.download = fileName;
+          a.click();
+          addLog(`POSTER_FRAME: DOWNLOADED AS [${fileName}].`);
+        }
         setIsProcessing(false);
         return;
       }
@@ -2218,6 +2251,46 @@ const BulkExporterModal = ({
            </div>
         </div>
 
+        {/* Poster Layout Options */}
+        <div className="p-5 bg-black/60 border border-[#00FF00]/10 rounded-md space-y-3">
+          <div className="flex items-center gap-2">
+            <span className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-pulse" />
+            <span className="text-[10px] uppercase font-black tracking-widest text-[#00FF00]">
+              Poster Layout Engine Setup
+            </span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => setPosterMode('single')}
+              className={`py-3 px-4 border text-left flex flex-col gap-1 transition-all rounded ${
+                posterMode === 'single'
+                  ? 'border-[#00FF00] bg-[#00FF00]/10 text-[#00FF00] shadow-[0_0_15px_rgba(0,255,0,0.15)]'
+                  : 'border-white/10 hover:border-purple-500/40 text-white/60 bg-black/40'
+              }`}
+            >
+              <span className="text-xs font-black uppercase tracking-wider">Single Long Poster</span>
+              <span className="text-[9px] opacity-70">
+                Place all {selectedItems.length} selected items inside 1 continuous high-res collage poster.
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setPosterMode('split')}
+              className={`py-3 px-4 border text-left flex flex-col gap-1 transition-all rounded ${
+                posterMode === 'split'
+                  ? 'border-[#00FF00] bg-[#00FF00]/10 text-[#00FF00] shadow-[0_0_15px_rgba(0,255,0,0.15)]'
+                  : 'border-white/10 hover:border-purple-500/40 text-white/60 bg-black/40'
+              }`}
+            >
+              <span className="text-xs font-black uppercase tracking-wider">Split into Parts (Max 12)</span>
+              <span className="text-[9px] opacity-70">
+                Divide into {Math.ceil(selectedItems.length / 12)} separate posters of max 12 items for clean vertical proportion.
+              </span>
+            </button>
+          </div>
+        </div>
+
         <div className="flex flex-col gap-6 pt-6">
            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
              <button 
@@ -2244,7 +2317,9 @@ const BulkExporterModal = ({
                 className="col-span-1 sm:col-span-2 btn-hacker py-6 flex items-center justify-center gap-3 bg-purple-600 text-white border-purple-400 group transition-all hover:scale-[1.02] shadow-[0_0_20px_rgba(168,85,247,0.3)]"
              >
                {isProcessing ? <Loader2 className="w-6 h-6 animate-spin" /> : <ImageIcon className="w-6 h-6 group-hover:scale-125 transition-transform" />}
-               <span className="font-black text-sm">GENERATE_POSTER_FRAME</span>
+               <span className="font-black text-sm uppercase">
+                 {posterMode === 'single' ? 'GENERATE_SINGLE_POSTER_FRAME' : `GENERATE_SPLIT_POSTER_FRAMES (${Math.ceil(selectedItems.length / 12)} PARTS)`}
+               </span>
              </button>
            </div>
 
