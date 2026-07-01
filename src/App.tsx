@@ -58,6 +58,7 @@ import {
   Type
 } from 'lucide-react';
 import { XtreamService } from './lib/xtreamService';
+import JSZip from 'jszip';
 import { XtreamAuth, XtreamCategory, XtreamStream, XtreamSeries, XtreamSeriesInfo, XtreamEpisode, M3UEntry, M3UPlaylist } from './types';
 import { copyToClipboard, parseM3U } from './lib/m3uParser';
 import { fetchApiData } from './services/proxyEngine';
@@ -2131,6 +2132,9 @@ const BulkExporterModal = ({
           const totalChunks = Math.ceil(enrichedItems.length / chunkSize);
           addLog(`POSTER_FRAME: SPLIT_MODE ENABLED. CREATING ${totalChunks} COLLAGES (max 12 items each)...`);
 
+          const zip = new JSZip();
+          const itemBaseName = selectedItems[0]?.name?.replace(/\s+/g, '_') || 'EXPORT';
+
           for (let i = 0; i < totalChunks; i++) {
             const chunk = enrichedItems.slice(i * chunkSize, (i + 1) * chunkSize);
             const partNum = i + 1;
@@ -2140,22 +2144,27 @@ const BulkExporterModal = ({
               chunk, 
               type, 
               (msg) => addLog(`[PART ${partNum}] ${msg}`),
-              `PART ${partNum} OF ${totalChunks}`
+              `${partNum}`
             );
 
-            const a = document.createElement('a');
-            a.href = dataUrl;
-            const itemBaseName = selectedItems[0]?.name?.replace(/\s+/g, '_') || 'EXPORT';
-            const fileName = `${itemBaseName}_POSTER_PART_${partNum}_OF_${totalChunks}.jpg`;
-            a.download = fileName;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            
-            // Wait 1.2s between downloads so the browser handles multiple downloads smoothly
-            await new Promise(resolve => setTimeout(resolve, 1200));
-            addLog(`POSTER_FRAME: DOWNLOAD COMPLETED FOR [${fileName}].`);
+            // Extract the base64-encoded image string from the data URL
+            const base64Data = dataUrl.split(',')[1];
+            const fileName = `${itemBaseName}_POSTER_${partNum}.jpg`;
+            zip.file(fileName, base64Data, { base64: true });
+            addLog(`POSTER_FRAME: PART ${partNum} ADDED TO ZIP.`);
           }
+
+          addLog("POSTER_FRAME: COMPRESSING ALL COLLAGE IMAGES INTO A ZIP ARCHIVE...");
+          const zipContent = await zip.generateAsync({ type: 'blob' });
+          const zipFileName = `${itemBaseName}_POSTER_COLLECTION.zip`;
+
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(zipContent);
+          a.download = zipFileName;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          addLog(`POSTER_FRAME: ZIP FILE [${zipFileName}] DOWNLOAD SUCCESSFULLY TRIGGERED.`);
         } else {
           addLog("POSTER_FRAME: GENERATING LUXURY COLLAGE...");
           const dataUrl = await PosterGenerator.generateCollage(enrichedItems, type, (msg) => addLog(msg));
@@ -2283,9 +2292,9 @@ const BulkExporterModal = ({
                   : 'border-white/10 hover:border-purple-500/40 text-white/60 bg-black/40'
               }`}
             >
-              <span className="text-xs font-black uppercase tracking-wider">Split into Parts (Max 12)</span>
+              <span className="text-xs font-black uppercase tracking-wider">Split into Parts (ZIP Download)</span>
               <span className="text-[9px] opacity-70">
-                Divide into {Math.ceil(selectedItems.length / 12)} separate posters of max 12 items for clean vertical proportion.
+                Divide into {Math.ceil(selectedItems.length / 12)} posters (max 12 items each) bundled inside a single ZIP file.
               </span>
             </button>
           </div>
