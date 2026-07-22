@@ -162,10 +162,8 @@ export default function App() {
 
   const xtream = useMemo(() => {
     if (!isLoggedIn || isM3UMode) return null;
-    // Only use exportAuth override if we are in gateway mode (Admin Root Access)
-    const m3uAuthOverride = authMode === 'gateway' ? exportAuth : undefined;
-    return new XtreamService(auth, m3uAuthOverride);
-  }, [isLoggedIn, auth, exportAuth, isM3UMode, authMode]);
+    return new XtreamService(auth);
+  }, [isLoggedIn, auth, isM3UMode]);
 
   const addLog = useCallback((msg: string) => {
     setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev].slice(0, 30));
@@ -455,6 +453,7 @@ export default function App() {
       return;
     }
     
+    setAuth(targetAuth);
     setLoading(true);
     setLoginProgress(0);
     setError(null);
@@ -467,7 +466,7 @@ export default function App() {
         { msg: 'SYNCING_USER_PROFILE', delay: 800, weight: 10 },
       ]);
       
-      const service = new XtreamService(targetAuth, exportAuth);
+      const service = new XtreamService(targetAuth);
       setLoadingStep('BYPASSING_SECURITY_FIREWALL');
       await service.testConnection();
       
